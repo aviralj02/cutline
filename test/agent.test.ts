@@ -1,7 +1,7 @@
 import { expect, test, describe } from "bun:test";
 import { emptyEdl } from "../src/lib/edl/types";
 import { insertClip } from "../src/lib/edl/ops";
-import { duration, resolve } from "../src/lib/edl/query";
+import { duration, fadeAt, isCropped, outputSize, resolve, tracksOf, zoomAt } from "../src/lib/edl/query";
 import { applyTool, describeState, TOOLS, type AgentContext } from "../src/lib/agent/tools";
 
 const ctx: AgentContext = {
@@ -10,6 +10,7 @@ const ctx: AgentContext = {
   analysis: { silences: { m1: [[10, 13], [30, 30.4], [45, 50]] } },
 };
 const base = () => insertClip(emptyEdl(30), { src: "m1", in: 0, out: 60 });
+const wide = () => insertClip(emptyEdl(30, 1920, 1080), { src: "m1", in: 0, out: 60 });
 
 describe("tool schemas", () => {
   test("every tool is strict with a closed schema", () => {
@@ -129,5 +130,99 @@ describe("describeState", () => {
 
   test("handles an empty timeline", () => {
     expect(describeState(emptyEdl(30), ctx)).toContain("(empty)");
+  });
+});
+
+describe("reframe", () => {
+  test("crops to a vertical aspect", () => {
+    const { edl, summary } = applyTool(wide(), ctx, "reframe", { aspect: "9:16" });
+    const out = outputSize(edl);
+    expect(out.width / out.height).toBeCloseTo(9 / 16, 2);
+    expect(summary).toContain("9:16");
+  });
+
+  test("reset restores the full frame", () => {
+    const cropped = applyTool(wide(), ctx, "reframe", { aspect: "1:1" }).edl;
+    expect(isCropped(cropped)).toBe(true);
+    const back = applyTool(cropped, ctx, "reframe", { aspect: "reset" }).edl;
+    expect(isCropped(back)).toBe(false);
+  });
+
+  test("an unknown aspect changes nothing and says so", () => {
+    const r = applyTool(wide(), ctx, "reframe", { aspect: "3:7" });
+    expect(isCropped(r.edl)).toBe(false);
+    expect(r.result).toContain("unknown aspect");
+  });
+
+  test("reframing does not disturb the cuts", () => {
+    const cut = applyTool(wide(), ctx, "ripple_delete", { start: 0, end: 10 }).edl;
+    const framed = applyTool(cut, ctx, "reframe", { aspect: "1:1" }).edl;
+    expect(duration(framed)).toBe(50);
+    expect(framed.clips.length).toBe(1);
+  });
+
+  test("the model is told the output size and the crop", () => {
+    const framed = applyTool(wide(), ctx, "reframe", { aspect: "9:16" }).edl;
+    const s = describeState(framed, ctx);
+    expect(s).toContain("output");
+    expect(s).toContain("Cropped:");
+  });
+});
+
+describe("effect tools", () => {
+  test("add_fade creates the lane on demand", () => {
+    const r = applyTool(wide(), ctx, "add_fade", { at: 0, dur: 1, mode: "in", color: "#ffffff" });
+    const lanes = tracksOf(r.edl);
+    expect(lanes.length).toBe(1);
+    expect(lanes[0].kind).toBe("fade");
+    expect(fadeAt(r.edl, 0.1)!.color).toBe("#ffffff");
+    expect(r.summary).toContain("fade in");
+  });
+
+  test("a second fade reuses the same lane", () => {
+    let e = applyTool(wide(), ctx, "add_fade", { at: 0, dur: 1, mode: "in" }).edl;
+    e = applyTool(e, ctx, "add_fade", { at: 50, dur: 2, mode: "out" }).edl;
+    expect(tracksOf(e).length).toBe(1);
+    expect(tracksOf(e)[0].items.length).toBe(2);
+  });
+
+  test("a bad colour falls back to black rather than corrupting the document", () => {
+    const r = applyTool(wide(), ctx, "add_fade", { at: 5, dur: 1, mode: "out", color: "red" });
+    expect(fadeAt(r.edl, 5.9)!.color).toBe("#000000");
+  });
+
+  test("add_zoom creates its own lane and clamps the scale", () => {
+    const r = applyTool(wide(), ctx, "add_zoom", { at: 10, dur: 4, scale: 99 });
+    expect(tracksOf(r.edl)[0].kind).toBe("zoom");
+    expect(zoomAt(r.edl, 12)!.scale).toBeLessThanOrEqual(4);
+  });
+
+  test("zoom focal point is clamped into the frame", () => {
+    const r = applyTool(wide(), ctx, "add_zoom", { at: 10, dur: 4, scale: 2, x: 5, y: -3 });
+    const z = zoomAt(r.edl, 12)!;
+    expect(z.x).toBe(1);
+    expect(z.y).toBe(0);
+  });
+
+  test("fade and zoom lanes coexist", () => {
+    let e = applyTool(wide(), ctx, "add_fade", { at: 0, dur: 1, mode: "in" }).edl;
+    e = applyTool(e, ctx, "add_zoom", { at: 20, dur: 4, scale: 1.5 }).edl;
+    expect(tracksOf(e).map((t) => t.kind)).toEqual(["fade", "zoom"]);
+    expect(fadeAt(e, 0.2)).not.toBeNull();
+    expect(zoomAt(e, 22)).not.toBeNull();
+  });
+
+  test("the model is told what is on the lanes", () => {
+    const e = applyTool(wide(), ctx, "add_zoom", { at: 10, dur: 4, scale: 2 }).edl;
+    const s = describeState(e, ctx);
+    expect(s).toContain("Effect lanes:");
+    expect(s).toContain("2x");
+  });
+
+  test("effects do not disturb the cuts", () => {
+    let e = applyTool(wide(), ctx, "add_fade", { at: 0, dur: 1, mode: "in" }).edl;
+    e = applyTool(e, ctx, "ripple_delete", { start: 0, end: 10 }).edl;
+    expect(duration(e)).toBe(50);
+    expect(tracksOf(e)[0].items.length).toBe(1);
   });
 });

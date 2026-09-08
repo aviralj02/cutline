@@ -1,9 +1,13 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Edl } from "../edl/types";
-import { duration, fmt, placed, sourceRangeToTimeline } from "../edl/query";
 import {
-  addText, deleteClip, moveClip, removeText, rippleDelete, rippleDeleteMany,
-  setSpeed, splitAt, trimClip, trimTimeline,
+  cropOf, duration, fmt, isCropped, isFade, outputSize, placed,
+  sourceRangeToTimeline, tracksOf,
+} from "../edl/query";
+import {
+  addEffect, addText, addTrack, deleteClip, FADE_COLORS, makeEffect, moveClip,
+  removeText, resetCrop, rippleDelete, rippleDeleteMany, setCropAspect,
+  setSpeed, splitAt, trackFor, trimClip, trimTimeline,
 } from "../edl/ops";
 
 export interface MediaInfo {
@@ -115,6 +119,57 @@ export const TOOLS: Anthropic.Tool[] = [
     ),
   },
   {
+    name: "add_fade",
+    description:
+      "Put a fade on the fade lane, creating that lane if it does not exist yet. Use for 'fade in at the start', 'fade to black at the end', or 'dip to white here'.",
+    strict: true,
+    input_schema: obj(
+      {
+        at: num("Timeline seconds where the fade starts."),
+        dur: num("Length in seconds. Around 1 second reads as a normal fade."),
+        mode: {
+          type: "string",
+          enum: ["in", "out", "dip"],
+          description: "in opens from the colour, out closes to it, dip passes through and back.",
+        },
+        color: str("Hex colour such as #000000. Defaults to black."),
+      },
+      ["at", "dur", "mode"],
+    ),
+  },
+  {
+    name: "add_zoom",
+    description:
+      "Put a punch-in on the zoom lane, creating that lane if it does not exist yet. Use for 'zoom in on this bit' or 'push in while he says the number'.",
+    strict: true,
+    input_schema: obj(
+      {
+        at: num("Timeline seconds where the zoom starts."),
+        dur: num("How long it stays zoomed, in seconds."),
+        scale: num("1 to 4. Around 1.4 is a gentle punch-in."),
+        x: num("Focal point across the frame, 0 to 1. Defaults to centre."),
+        y: num("Focal point down the frame, 0 to 1. Defaults to slightly above centre."),
+      },
+      ["at", "dur", "scale"],
+    ),
+  },
+  {
+    name: "reframe",
+    description:
+      "Crop the finished video to an aspect ratio, centred on the frame. Use for 'make this vertical for TikTok', 'crop to square', or 'make it 9:16'. Pass reset to put the full frame back.",
+    strict: true,
+    input_schema: obj(
+      {
+        aspect: {
+          type: "string",
+          enum: ["16:9", "9:16", "1:1", "4:5", "4:3", "reset"],
+          description: "Target aspect ratio, or reset for the full frame.",
+        },
+      },
+      ["aspect"],
+    ),
+  },
+  {
     name: "remove_text",
     description: "Remove a text overlay by id.",
     strict: true,
@@ -204,6 +259,49 @@ export function applyTool(edl: Edl, ctx: AgentContext, name: string, input: Inpu
         `Added text “${content.slice(0, 40)}”`,
       );
     }
+    case "add_fade": {
+      const at = n(input.at);
+      const dur = Math.max(0.08, n(input.dur, 1));
+      const mode = s(input.mode, "out") as "in" | "out" | "dip";
+      const color = /^#[0-9a-fA-F]{6}$/.test(s(input.color)) ? s(input.color) : "#000000";
+      // The lane is created on demand, so the model never has to sequence a
+      // setup call before the call it actually wants.
+      const withLane = trackFor(edl, "fade") ? edl : addTrack(edl, "fade");
+      const lane = trackFor(withLane, "fade")!;
+      const item = { ...makeEffect("fade", at, dur), dur, mode, color } as never;
+      const named = FADE_COLORS.find((c) => c.value === color)?.name ?? color;
+      return done(
+        addEffect(withLane, lane.id, item),
+        `Added a ${mode === "dip" ? "dip through" : `fade ${mode}`} ${named.toLowerCase()} at ${fmt(at)}`,
+      );
+    }
+    case "add_zoom": {
+      const at = n(input.at);
+      const dur = Math.max(0.24, n(input.dur, 2));
+      const scale = Math.min(4, Math.max(1, n(input.scale, 1.4)));
+      const withLane = trackFor(edl, "zoom") ? edl : addTrack(edl, "zoom");
+      const lane = trackFor(withLane, "zoom")!;
+      const item = {
+        ...makeEffect("zoom", at, dur),
+        dur,
+        scale,
+        x: Math.min(1, Math.max(0, n(input.x, 0.5))),
+        y: Math.min(1, Math.max(0, n(input.y, 0.45))),
+      } as never;
+      return done(addEffect(withLane, lane.id, item), `Added a ${scale.toFixed(2)}× zoom at ${fmt(at)}`);
+    }
+    case "reframe": {
+      const key = s(input.aspect, "reset");
+      if (key === "reset") return done(resetCrop(edl), "Restored the full frame");
+      const ratios: Record<string, number> = {
+        "16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1, "4:5": 4 / 5, "4:3": 4 / 3,
+      };
+      const aspect = ratios[key];
+      if (!aspect) return { edl, summary: `Unknown aspect ${key}`, result: `Error: unknown aspect ${key}.` };
+      const next = setCropAspect(edl, aspect);
+      const size = outputSize(next);
+      return done(next, `Reframed to ${key} (${size.width} × ${size.height})`);
+    }
     case "remove_text":
       return done(removeText(edl, s(input.text_id)), `Removed text ${s(input.text_id)}`);
     default:
@@ -214,7 +312,13 @@ export function applyTool(edl: Edl, ctx: AgentContext, name: string, input: Inpu
 /** A compact, readable snapshot of the edit for the model's context. */
 export function describeState(edl: Edl, ctx: AgentContext): string {
   const lines: string[] = [];
-  lines.push(`Timeline: ${fmt(duration(edl))}, ${edl.clips.length} clip(s), ${edl.fps}fps, ${edl.width}x${edl.height}`);
+  const size = outputSize(edl);
+  lines.push(`Timeline: ${fmt(duration(edl))}, ${edl.clips.length} clip(s), ${edl.fps}fps`);
+  lines.push(`Frame: source ${edl.width}x${edl.height}, output ${size.width}x${size.height}`);
+  if (isCropped(edl)) {
+    const c = cropOf(edl);
+    lines.push(`Cropped: x=${c.x} y=${c.y} w=${c.w} h=${c.h} of the frame`);
+  }
 
   lines.push("", "Clips (timeline position | source range):");
   for (const p of placed(edl)) {
@@ -230,6 +334,24 @@ export function describeState(edl: Edl, ctx: AgentContext): string {
     lines.push("", "Text overlays:");
     for (const t of edl.text) {
       lines.push(`  id=${t.id} ${fmt(t.at)} +${t.dur}s [${t.style}] “${t.content}”`);
+    }
+  }
+
+  const lanes = tracksOf(edl);
+  if (lanes.length) {
+    lines.push("", "Effect lanes:");
+    for (const lane of lanes) {
+      if (!lane.items.length) {
+        lines.push(`  ${lane.name}: empty`);
+        continue;
+      }
+      for (const item of lane.items) {
+        lines.push(
+          isFade(item)
+            ? `  ${lane.name} id=${item.id} ${fmt(item.at)} +${item.dur}s ${item.mode} ${item.color}`
+            : `  ${lane.name} id=${item.id} ${fmt(item.at)} +${item.dur}s ${item.scale}x at ${item.x},${item.y}`,
+        );
+      }
     }
   }
 
