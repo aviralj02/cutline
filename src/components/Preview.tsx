@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useStore, edlOf } from "@/lib/store";
-import { duration, fmt, placed } from "@/lib/edl/query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useStore, useEdl } from "@/lib/store";
+import { cropOf, duration, fadeAt, fmt, isCropped, outputSize, placed, zoomAt } from "@/lib/edl/query";
 import { mediaUrl } from "@/lib/media/opfs";
 import type { Edl } from "@/lib/edl/types";
+import { findEffect, resetCrop, setCrop, setCropAspect, updateEffect } from "@/lib/edl/ops";
+import type { Crop } from "@/lib/edl/types";
+import CropOverlay from "./CropOverlay";
+import FocusPoint from "./FocusPoint";
+import { Button, Chip, CropIcon, IconButton, Kbd, PauseIcon, PlayIcon, ResetIcon, Timecode } from "@/components/ui";
 
-/** Load one hidden <video> per source file, backed by OPFS object URLs. */
 function useVideoPool(mediaIds: string[]) {
   const pool = useRef<Map<string, HTMLVideoElement>>(new Map());
   const [, force] = useState(0);
@@ -41,30 +45,30 @@ function drawText(ctx: CanvasRenderingContext2D, edl: Edl, t: number, w: number,
     ctx.save();
     ctx.textBaseline = "alphabetic";
     if (item.style === "title") {
-      ctx.font = `700 ${Math.round(64 * scale)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `700 ${Math.round(64 * scale)}px Archivo, ui-sans-serif, sans-serif`;
       ctx.textAlign = "center";
-      ctx.shadowColor = "rgba(0,0,0,.6)";
-      ctx.shadowBlur = 16 * scale;
+      ctx.shadowColor = "rgba(0,0,0,.55)";
+      ctx.shadowBlur = 18 * scale;
       ctx.fillStyle = "#fff";
       ctx.fillText(item.content, w / 2, h / 2);
     } else if (item.style === "lower-third") {
       const pad = 24 * scale;
-      ctx.font = `600 ${Math.round(38 * scale)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `600 ${Math.round(38 * scale)}px Archivo, ui-sans-serif, sans-serif`;
       const width = ctx.measureText(item.content).width;
       const y = h - 140 * scale;
-      ctx.fillStyle = "rgba(10,10,12,.78)";
+      ctx.fillStyle = "rgba(12,12,12,.8)";
       ctx.fillRect(pad, y - 46 * scale, width + pad * 2, 64 * scale);
-      ctx.fillStyle = "#f5b544";
+      ctx.fillStyle = "#e0a92e";
       ctx.fillRect(pad, y - 46 * scale, 4 * scale, 64 * scale);
       ctx.fillStyle = "#fff";
       ctx.textAlign = "left";
       ctx.fillText(item.content, pad * 2, y);
     } else {
-      ctx.font = `600 ${Math.round(34 * scale)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `500 ${Math.round(34 * scale)}px Archivo, ui-sans-serif, sans-serif`;
       ctx.textAlign = "center";
       const width = ctx.measureText(item.content).width;
       const y = h - 70 * scale;
-      ctx.fillStyle = "rgba(10,10,12,.7)";
+      ctx.fillStyle = "rgba(12,12,12,.72)";
       ctx.fillRect(w / 2 - width / 2 - 16 * scale, y - 34 * scale, width + 32 * scale, 48 * scale);
       ctx.fillStyle = "#fff";
       ctx.fillText(item.content, w / 2, y);
@@ -74,30 +78,50 @@ function drawText(ctx: CanvasRenderingContext2D, edl: Edl, t: number, w: number,
 }
 
 export default function Preview() {
-  const repo = useStore((s) => s.repo);
   const playhead = useStore((s) => s.playhead);
   const playing = useStore((s) => s.playing);
   const setPlayhead = useStore((s) => s.setPlayhead);
   const setPlaying = useStore((s) => s.setPlaying);
   const media = useStore((s) => s.media);
+  const apply = useStore((s) => s.apply);
+  const cropping = useStore((s) => s.cropping);
+  const setCropping = useStore((s) => s.setCropping);
+  const selectedEffect = useStore((s) => s.selectedEffect);
+  const setDraft = useStore((s) => s.setDraft);
+  const commitDraft = useStore((s) => s.commitDraft);
 
-  const edl = useMemo(() => edlOf(repo), [repo]);
+  const edl = useEdl();
+  const crop = cropOf(edl);
+  const out = outputSize(edl);
+  // While cropping you need to see what you are excluding, so the gate shows
+  // the whole frame and the handles sit on top of it.
+  const view = cropping ? { width: edl.width, height: edl.height } : out;
+  const [cropDraft, setCropDraft] = useState<Crop | null>(null);
+  const live = cropDraft ?? crop;
+
+  // The focal target replaces a pair of X/Y sliders: you point at the thing
+  // you want to push into, on the thing itself.
+  const zoomBeingEdited = useMemo(() => {
+    if (!selectedEffect || cropping) return null;
+    const item = findEffect(edl, selectedEffect);
+    return item && item.kind === "zoom" ? item : null;
+  }, [edl, selectedEffect, cropping]);
   const total = duration(edl);
   const mediaIds = useMemo(() => media.map((m) => m.id), [media]);
   const pool = useVideoPool(mediaIds);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Refs so the animation loop never restarts on a state change.
   const headRef = useRef(playhead);
   const playRef = useRef(playing);
   const edlRef = useRef(edl);
+  const frameRef = useRef({ crop: live, cropping });
   headRef.current = playhead;
   playRef.current = playing;
   edlRef.current = edl;
+  frameRef.current = { crop: live, cropping };
 
   useEffect(() => {
     let raf = 0;
-
     const frame = () => {
       raf = requestAnimationFrame(frame);
       const canvas = canvasRef.current;
@@ -110,7 +134,6 @@ export default function Preview() {
       const t = headRef.current;
       const spot = spots.find((p) => t >= p.start && t < p.end) ?? null;
 
-      // Anything that is not the active source must be silent and paused.
       for (const [id, v] of pool.current) {
         if (!spot || id !== spot.clip.src) {
           if (!v.paused) v.pause();
@@ -118,7 +141,8 @@ export default function Preview() {
       }
 
       if (!spot) {
-        ctx.fillStyle = "#0b0b0d";
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = "#0a0a0a";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         if (playRef.current) setPlaying(false);
         return;
@@ -133,8 +157,7 @@ export default function Preview() {
       if (playRef.current) {
         v.playbackRate = rate;
         if (v.paused) void v.play().catch(() => setPlaying(false));
-        // A cut is a seek: when the source passes this clip's out-point, jump
-        // to whatever the next clip is instead of playing through it.
+        // A cut is a seek: at the out-point, jump rather than play through.
         if (v.currentTime >= spot.clip.out - 0.03) {
           const next = spots[spot.index + 1];
           if (!next) {
@@ -146,8 +169,8 @@ export default function Preview() {
             setPlayhead(next.start + 0.001, true);
           }
         } else {
-          // The video element is the clock while it is inside a clip; that
-          // keeps audio and picture locked together.
+          // The video element is the clock inside a clip, so audio and
+          // picture stay locked together.
           setPlayhead(spot.start + (v.currentTime - spot.clip.in) / rate, true);
         }
       } else {
@@ -155,66 +178,165 @@ export default function Preview() {
         if (Math.abs(v.currentTime - wanted) > 0.05) v.currentTime = wanted;
       }
 
-      // Letterbox the source into the canvas.
-      const cw = canvas.width;
-      const ch = canvas.height;
-      const scale = Math.min(cw / v.videoWidth, ch / v.videoHeight);
+      // Draw in composition coordinates and let one transform apply the
+      // crop, so overlays are reframed by exactly the same maths as the
+      // picture instead of a second, drifting copy of it.
+      const { crop: liveCrop, cropping: framing } = frameRef.current;
+      const W = cur.width;
+      const H = cur.height;
+      const vx = framing ? 0 : liveCrop.x;
+      const vy = framing ? 0 : liveCrop.y;
+      const vw = framing ? 1 : liveCrop.w;
+      const k = canvas.width / (W * vw);
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = "#0a0a0a";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(k, 0, 0, k, -vx * W * k, -vy * H * k);
+
+      const scale = Math.min(W / v.videoWidth, H / v.videoHeight);
       const dw = v.videoWidth * scale;
       const dh = v.videoHeight * scale;
-      ctx.fillStyle = "#0b0b0d";
-      ctx.fillRect(0, 0, cw, ch);
-      ctx.drawImage(v, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
-      drawText(ctx, cur, t, cw, ch);
-    };
 
+      // Zoom is a transform about its focal point, applied inside the crop so
+      // the two compose the way the viewer expects: punch in, then reframe.
+      const zoom = zoomAt(cur, t);
+      if (zoom) {
+        ctx.save();
+        const fx = zoom.x * W;
+        const fy = zoom.y * H;
+        ctx.translate(fx, fy);
+        ctx.scale(zoom.scale, zoom.scale);
+        ctx.translate(-fx, -fy);
+      }
+      ctx.drawImage(v, (W - dw) / 2, (H - dh) / 2, dw, dh);
+      if (zoom) ctx.restore();
+
+      // Titles ride above the zoom — a caption that scales with a punch-in
+      // reads as a mistake, not as an effect.
+      drawText(ctx, cur, t, W, H);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+      // The wash is the last thing drawn, so it covers everything including
+      // overlays, which is what a fade to black means.
+      const fade = fadeAt(cur, t);
+      if (fade) {
+        ctx.save();
+        ctx.globalAlpha = fade.alpha;
+        ctx.fillStyle = fade.color;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      }
+    };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
   }, [pool, setPlayhead, setPlaying]);
 
-  // Pause every source when playback stops or the component unmounts.
   useEffect(() => {
     if (playing) return;
     for (const [, v] of pool.current) if (!v.paused) v.pause();
   }, [playing, pool]);
 
+  // Dragging updates a draft; only letting go writes a version. Otherwise a
+  // single crop gesture would bury the history under a hundred entries.
+  const commitCrop = useCallback(() => {
+    setCropDraft((d) => {
+      if (d) apply(setCrop(edl, d), "Crop");
+      return null;
+    });
+  }, [apply, edl]);
+
+  const PRESETS: Array<[string, number | null]> = [
+    ["Full frame", null],
+    ["16:9", 16 / 9],
+    ["9:16", 9 / 16],
+    ["1:1", 1],
+    ["4:5", 4 / 5],
+  ];
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="relative flex min-h-0 flex-1 items-center justify-center bg-[#0b0b0d] p-4">
-        <canvas
-          ref={canvasRef}
-          width={1280}
-          height={720}
-          className="max-h-full max-w-full rounded-md shadow-[0_8px_40px_rgba(0,0,0,.6)] ring-1 ring-white/5"
-          style={{ aspectRatio: `${edl.width} / ${edl.height}` }}
-        />
-      </div>
-
-      <div className="flex items-center gap-3 border-t border-white/8 bg-[#111114] px-4 py-2.5">
-        <button
-          onClick={() => setPlaying(!playing)}
-          className="grid h-9 w-9 place-items-center rounded-full bg-[#f5b544] text-black transition hover:bg-[#ffc65e]"
-          aria-label={playing ? "Pause" : "Play"}
-        >
-          {playing ? (
-            <svg width="12" height="13" viewBox="0 0 12 13" fill="currentColor">
-              <rect x="0" y="0" width="4" height="13" rx="1" />
-              <rect x="8" y="0" width="4" height="13" rx="1" />
-            </svg>
-          ) : (
-            <svg width="12" height="13" viewBox="0 0 12 13" fill="currentColor">
-              <path d="M1 1.2c0-.8.9-1.3 1.6-.9l8 5.3c.6.4.6 1.4 0 1.8l-8 5.3c-.7.4-1.6-.1-1.6-.9V1.2z" />
-            </svg>
+      {/* Mid-grey mat. A black surround makes footage read brighter than it
+          is, so the area immediately around the gate is neutral. */}
+      <div className="relative flex min-h-0 flex-1 items-center justify-center bg-mat px-10 py-7">
+        {/* Framing belongs to the picture, so its control lives over the mat
+            rather than in a bar of its own. */}
+        <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+          {isCropped(edl) && !cropping && (
+            <Chip tone="leader">
+              {out.width} × {out.height}
+            </Chip>
           )}
-        </button>
-        <span className="font-mono text-xs tabular-nums text-white/70">
-          {fmt(playhead)} <span className="text-white/25">/ {fmt(total)}</span>
-        </span>
-        <div className="ml-auto flex items-center gap-2 text-[11px] text-white/35">
-          <span>{edl.clips.length} clip{edl.clips.length === 1 ? "" : "s"}</span>
-          <span className="text-white/15">·</span>
-          <span>{edl.width}×{edl.height}</span>
+          <Button
+            onClick={() => setCropping(!cropping)}
+            icon={<CropIcon />}
+            className={`border border-edge bg-panel/90 backdrop-blur ${cropping ? "text-ink" : ""}`}
+            title="Reframe the finished video"
+          >
+            Crop
+          </Button>
+        </div>
+        <div
+          className="relative max-h-full max-w-full overflow-hidden rounded-gate shadow-[0_4px_28px_rgba(0,0,0,.5)]"
+          style={{ aspectRatio: `${view.width} / ${view.height}` }}
+        >
+          <canvas
+            ref={canvasRef}
+            width={Math.min(1600, view.width)}
+            height={Math.round(Math.min(1600, view.width) * (view.height / view.width))}
+            className="block h-full w-full"
+          />
+          {cropping && (
+            <CropOverlay crop={live} onChange={setCropDraft} onCommit={commitCrop} />
+          )}
+          {zoomBeingEdited && (
+            <FocusPoint
+              x={zoomBeingEdited.x}
+              y={zoomBeingEdited.y}
+              scale={zoomBeingEdited.scale}
+              crop={crop}
+              onChange={(p) => setDraft(updateEffect(edl, zoomBeingEdited.id, p as never))}
+              onCommit={() => commitDraft("Zoom focus")}
+            />
+          )}
         </div>
       </div>
+
+      {cropping && (
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-edge bg-panel px-3 py-2">
+          <span className="mr-1 text-[12px] text-ink-2">Reframe</span>
+          {PRESETS.map(([label, aspect]) => {
+            const active =
+              aspect === null
+                ? !isCropped(edl)
+                : Math.abs(out.width / out.height - aspect) < 0.02 && isCropped(edl);
+            return (
+              <Button
+                key={label}
+                onClick={() => apply(setCropAspect(edl, aspect), aspect ? `Crop to ${label}` : "Full frame")}
+                className={active ? "bg-raised text-ink" : ""}
+              >
+                {label}
+              </Button>
+            );
+          })}
+          <div className="ml-auto flex items-center gap-1.5">
+            <Chip>{out.width} × {out.height}</Chip>
+            <Button
+              onClick={() => apply(resetCrop(edl), "Reset crop")}
+              icon={<ResetIcon size={13} />}
+              disabled={!isCropped(edl)}
+              title="Put the framing back to the full frame"
+            >
+              Reset
+            </Button>
+            <Button variant="primary" size="md" onClick={() => setCropping(false)}>
+              Done
+            </Button>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
