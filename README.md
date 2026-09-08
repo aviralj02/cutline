@@ -5,6 +5,10 @@ and every change is a **version** you can restore.
 
 No uploads. Your footage never leaves your machine.
 
+New to video editing? **[ARCHITECTURE.md](./ARCHITECTURE.md)** defines every
+term this codebase uses — EDL, ripple delete, dBFS, demuxing, swatches — and
+diagrams the import, render, playback, versioning and agent flows.
+
 ## The idea
 
 The whole design rests on one decision: the edit is plain JSON, not video.
