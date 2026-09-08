@@ -61,6 +61,35 @@ export function log(r: Repo, from = r.branches[r.current]): Commit[] {
   return out;
 }
 
+export const canUndo = (r: Repo): boolean => !!head(r)?.parent;
+
+/**
+ * Step back one version and **drop it from the history**.
+ *
+ * This is deliberately different from `restore`. Restore is for revisiting a
+ * version from a while ago and belongs in the record. Undo is for taking back
+ * the thing you just did, where leaving a pair of entries behind — the change
+ * and its reversal — turns the history into a log of mistakes instead of a
+ * list of states worth returning to.
+ *
+ * The commit is only deleted when nothing else reaches it, so undoing on one
+ * branch can never cut the ground from under another.
+ */
+export function undo(r: Repo): { repo: Repo; undone: Commit | null } {
+  const headId = r.branches[r.current];
+  const target = r.commits[headId];
+  if (!target?.parent) return { repo: r, undone: null };
+
+  const branches = { ...r.branches, [r.current]: target.parent };
+  const stillReachable =
+    Object.values(branches).includes(headId) ||
+    Object.values(r.commits).some((c) => c.id !== headId && c.parent === headId);
+
+  const commits = { ...r.commits };
+  if (!stillReachable) delete commits[headId];
+  return { repo: { ...r, commits, branches }, undone: target };
+}
+
 /**
  * Restore an old version by committing it forward rather than rewinding the
  * pointer. Undo is itself an edit, so nothing is ever unreachable and the
