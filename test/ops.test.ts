@@ -1,13 +1,13 @@
 import { expect, test, describe } from "bun:test";
 import { emptyEdl, type Edl } from "../src/lib/edl/types";
-import { duration, placed, resolve } from "../src/lib/edl/query";
+import { duration, isCropped, outputSize, placed, resolve } from "../src/lib/edl/query";
 import {
-  addText, deleteClip, insertClip, moveClip, rippleDelete,
-  rippleDeleteMany, setSpeed, splitAt, trimTimeline,
+  addText, deleteClip, insertClip, moveClip, resetCrop, rippleDelete,
+  rippleDeleteMany, setCrop, setCropAspect, setSpeed, splitAt, trimTimeline,
 } from "../src/lib/edl/ops";
 
 /** One 60s clip of "interview.mp4". */
-const base = (): Edl => insertClip(emptyEdl(30), { src: "m1", in: 0, out: 60 });
+const base = (): Edl => insertClip(emptyEdl(30, 1920, 1080), { src: "m1", in: 0, out: 60 });
 
 describe("placement", () => {
   test("contiguous prefix sum", () => {
@@ -154,5 +154,65 @@ describe("other ops", () => {
     const b = rippleDelete(base(), 10.0029, 20.0011);
     const shape = (e: Edl) => JSON.stringify(e, (k, v) => (k === "id" ? undefined : v));
     expect(shape(a)).toBe(shape(b));
+  });
+});
+
+describe("crop", () => {
+  test("absent by default, and reset removes it entirely", () => {
+    const e = base();
+    expect(e.crop).toBeUndefined();
+    expect(isCropped(e)).toBe(false);
+    expect(resetCrop(setCrop(e, { x: 0.1, y: 0.1, w: 0.5, h: 0.5 })).crop).toBeUndefined();
+  });
+
+  test("a full-frame crop normalises back to no crop", () => {
+    const e = setCrop(base(), { x: 0, y: 0, w: 1, h: 1 });
+    expect(e.crop).toBeUndefined();
+    expect(isCropped(e)).toBe(false);
+  });
+
+  test("clamps so the rectangle can never leave the frame", () => {
+    const e = setCrop(base(), { x: 0.9, y: 0.9, w: 0.5, h: 0.5 });
+    expect(e.crop!.x).toBeCloseTo(0.5, 3);
+    expect(e.crop!.y).toBeCloseTo(0.5, 3);
+    expect(e.crop!.x + e.crop!.w).toBeLessThanOrEqual(1.0001);
+    expect(e.crop!.y + e.crop!.h).toBeLessThanOrEqual(1.0001);
+  });
+
+  test("refuses a degenerate crop", () => {
+    const e = setCrop(base(), { w: 0, h: 0 });
+    expect(e.crop!.w).toBeGreaterThanOrEqual(0.05);
+    expect(e.crop!.h).toBeGreaterThanOrEqual(0.05);
+  });
+
+  test("aspect presets centre the largest fitting rectangle", () => {
+    const wide = base(); // 1920x1080
+    const portrait = setCropAspect(wide, 9 / 16);
+    const out = outputSize(portrait);
+    expect(out.width / out.height).toBeCloseTo(9 / 16, 2);
+    expect(portrait.crop!.x).toBeCloseTo((1 - portrait.crop!.w) / 2, 4);
+    expect(portrait.crop!.h).toBe(1); // full height used
+
+    const square = setCropAspect(wide, 1);
+    const sq = outputSize(square);
+    expect(sq.width).toBe(sq.height);
+  });
+
+  test("a preset matching the frame is not a crop at all", () => {
+    expect(setCropAspect(base(), 16 / 9).crop).toBeUndefined();
+    expect(setCropAspect(base(), null).crop).toBeUndefined();
+  });
+
+  test("output size is even, so the result stays encodable", () => {
+    const e = setCropAspect(base(), 9 / 16);
+    const { width, height } = outputSize(e);
+    expect(width % 2).toBe(0);
+    expect(height % 2).toBe(0);
+  });
+
+  test("crop survives edits to the timeline", () => {
+    const e = rippleDelete(setCropAspect(base(), 1), 10, 20);
+    expect(e.crop).toBeDefined();
+    expect(duration(e)).toBe(50);
   });
 });
