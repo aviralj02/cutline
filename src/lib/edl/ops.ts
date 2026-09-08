@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
-import type { Clip, Edl, Sec, TextClip } from "./types";
-import { clipDur, placed, snap } from "./query";
+import type { Clip, Crop, Edl, Sec, TextClip } from "./types";
+import { clipDur, FULL_FRAME, placed, snap } from "./query";
 
 const id = () => nanoid(8);
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -15,6 +15,23 @@ export function normalize(edl: Edl): Edl {
   next.text = next.text
     .map((t) => ({ ...t, at: snap(Math.max(0, t.at), f), dur: snap(t.dur, f) }))
     .filter((t) => t.dur > 0);
+  // A crop covering the whole frame is the same as no crop; store the
+  // simpler form so "is this cropped?" never depends on float noise.
+  if (next.crop && next.crop.x === 0 && next.crop.y === 0 && next.crop.w === 1 && next.crop.h === 1) {
+    delete next.crop;
+  }
+  if (next.tracks) {
+    next.tracks = next.tracks.map((t) => ({
+      ...t,
+      items: t.items
+        .map((e) => ({ ...e, at: snap(Math.max(0, e.at), f), dur: snap(e.dur, f) }))
+        .filter((e) => e.dur >= 1 / f)
+        .sort((a, b) => a.at - b.at),
+    }));
+    // An empty `tracks` array and no `tracks` mean the same thing; keep one
+    // form so version diffs do not churn.
+    if (!next.tracks.length) delete next.tracks;
+  }
   return next;
 }
 
@@ -119,6 +136,44 @@ export function trimClip(edl: Edl, clipId: string, inPt?: Sec, outPt?: Sec): Edl
   return normalize({ ...edl, clips });
 }
 
+/**
+ * Drag one edge of a clip on the timeline.
+ *
+ * The track is contiguous, so shortening a clip's head pulls everything after
+ * it earlier — a ripple trim. `sourceDur` is the length of the underlying
+ * file: without it a clip could be extended past the end of its own footage.
+ */
+export function trimClipEdge(
+  edl: Edl,
+  clipId: string,
+  edge: "start" | "end",
+  timelineT: Sec,
+  sourceDur?: Sec,
+): Edl {
+  const spot = placed(edl).find((p) => p.clip.id === clipId);
+  if (!spot) return edl;
+  const c = spot.clip;
+  const rate = c.speed ?? 1;
+  // Two frames is the shortest clip worth having.
+  const min = (2 / edl.fps) * rate;
+  // Where the drag lands, expressed in the source file's own time.
+  const atSource = c.in + (timelineT - spot.start) * rate;
+
+  if (edge === "start") {
+    const inPt = Math.max(0, Math.min(c.out - min, atSource));
+    return normalize({
+      ...edl,
+      clips: edl.clips.map((x) => (x.id === clipId ? { ...x, in: inPt } : x)),
+    });
+  }
+  const limit = sourceDur ?? Number.POSITIVE_INFINITY;
+  const outPt = Math.min(limit, Math.max(c.in + min, atSource));
+  return normalize({
+    ...edl,
+    clips: edl.clips.map((x) => (x.id === clipId ? { ...x, out: outPt } : x)),
+  });
+}
+
 /** Reorder a clip within the track. */
 export function moveClip(edl: Edl, clipId: string, toIndex: number): Edl {
   const from = edl.clips.findIndex((c) => c.id === clipId);
@@ -158,6 +213,36 @@ export function removeText(edl: Edl, textId: string): Edl {
   return normalize({ ...edl, text: edl.text.filter((t) => t.id !== textId) });
 }
 
+/** Set the reframe. Clamped so the rectangle always stays inside the frame. */
+export function setCrop(edl: Edl, crop: Partial<Crop>): Edl {
+  const cur = edl.crop ?? FULL_FRAME;
+  const w = Math.min(1, Math.max(0.05, crop.w ?? cur.w));
+  const h = Math.min(1, Math.max(0.05, crop.h ?? cur.h));
+  const x = Math.min(1 - w, Math.max(0, crop.x ?? cur.x));
+  const y = Math.min(1 - h, Math.max(0, crop.y ?? cur.y));
+  const r = (n: number) => Math.round(n * 1e4) / 1e4;
+  return normalize({ ...edl, crop: { x: r(x), y: r(y), w: r(w), h: r(h) } });
+}
+
+/**
+ * Centre the largest rectangle of the given aspect that fits the frame.
+ * `aspect` is width divided by height; pass null to restore the full frame.
+ */
+export function setCropAspect(edl: Edl, aspect: number | null): Edl {
+  if (!aspect) return resetCrop(edl);
+  const frame = edl.width / edl.height;
+  const w = aspect >= frame ? 1 : aspect / frame;
+  const h = aspect >= frame ? frame / aspect : 1;
+  return setCrop(edl, { w, h, x: (1 - w) / 2, y: (1 - h) / 2 });
+}
+
+/** Back to the full frame. Nothing about the crop is destructive. */
+export function resetCrop(edl: Edl): Edl {
+  const next = { ...edl };
+  delete next.crop;
+  return normalize(next);
+}
+
 /** Keep only [start, end) of the timeline. */
 export function trimTimeline(edl: Edl, start: Sec, end: Sec): Edl {
   const total = placed(edl).at(-1)?.end ?? 0;
@@ -168,3 +253,119 @@ export function trimTimeline(edl: Edl, start: Sec, end: Sec): Edl {
 }
 
 export { clipDur };
+
+/* ---------------------------------------------------------------------------
+   Effect lanes
+
+   Every effect is an interval, so one set of operations covers fades, zooms
+   and anything added later.
+   ------------------------------------------------------------------------- */
+
+import type { Effect, Track, TrackKind } from "./types";
+import { tracksOf } from "./query";
+
+/** A palette grounded in what film actually fades to. */
+export const FADE_COLORS: Array<{ name: string; value: string }> = [
+  { name: "Black", value: "#000000" },
+  { name: "White", value: "#ffffff" },
+  { name: "Warm black", value: "#0d0906" },
+  { name: "Print blue", value: "#0a1826" },
+  { name: "Sepia", value: "#3a2a18" },
+  { name: "Leader", value: "#e0a92e" },
+  { name: "Grease", value: "#d2503f" },
+  { name: "Bone", value: "#e8e2d4" },
+];
+
+const TRACK_NAMES: Record<TrackKind, string> = { fade: "Fade", zoom: "Zoom" };
+
+/**
+ * At most one lane per kind. Every fade lives on the fade lane, so there is
+ * one place to look for a fade and no question about which lane wins.
+ * Adding a lane that already exists is a no-op, not an error.
+ */
+export function addTrack(edl: Edl, kind: TrackKind): Edl {
+  const tracks = tracksOf(edl);
+  if (tracks.some((t) => t.kind === kind)) return edl;
+  const track: Track = { id: id(), kind, name: TRACK_NAMES[kind], items: [] };
+  // Fades sit under zooms, matching the order they are composited in.
+  const next = [...tracks, track].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "fade" ? -1 : 1));
+  return normalize({ ...edl, tracks: next });
+}
+
+export const trackFor = (edl: Edl, kind: TrackKind): Track | null =>
+  tracksOf(edl).find((t) => t.kind === kind) ?? null;
+
+export function removeTrack(edl: Edl, trackId: string): Edl {
+  return normalize({ ...edl, tracks: tracksOf(edl).filter((t) => t.id !== trackId) });
+}
+
+export function renameTrack(edl: Edl, trackId: string, name: string): Edl {
+  return normalize({
+    ...edl,
+    tracks: tracksOf(edl).map((t) => (t.id === trackId ? { ...t, name } : t)),
+  });
+}
+
+/** Default shapes, so adding an effect lands somewhere usable immediately. */
+export function makeEffect(kind: TrackKind, at: Sec, dur = 1): Effect {
+  return kind === "fade"
+    ? { id: id(), kind: "fade", at, dur, color: "#000000", mode: "out" }
+    : { id: id(), kind: "zoom", at, dur: Math.max(dur, 1.2), scale: 1.4, x: 0.5, y: 0.45, ramp: 0.4 };
+}
+
+export function addEffect(edl: Edl, trackId: string, effect: Effect): Edl {
+  return normalize({
+    ...edl,
+    tracks: tracksOf(edl).map((t) =>
+      t.id === trackId ? { ...t, items: [...t.items, effect] } : t,
+    ),
+  });
+}
+
+export function updateEffect(edl: Edl, effectId: string, patch: Partial<Effect>): Edl {
+  return normalize({
+    ...edl,
+    tracks: tracksOf(edl).map((t) => ({
+      ...t,
+      items: t.items.map((e) => (e.id === effectId ? ({ ...e, ...patch } as Effect) : e)),
+    })),
+  });
+}
+
+export function removeEffect(edl: Edl, effectId: string): Edl {
+  return normalize({
+    ...edl,
+    tracks: tracksOf(edl).map((t) => ({ ...t, items: t.items.filter((e) => e.id !== effectId) })),
+  });
+}
+
+/** Slide an effect without changing its length. */
+export function moveEffect(edl: Edl, effectId: string, at: Sec): Edl {
+  return updateEffect(edl, effectId, { at: Math.max(0, at) } as Partial<Effect>);
+}
+
+/**
+ * Drag one edge. The opposite edge stays put, which is what makes a trim a
+ * trim rather than a move.
+ */
+export function trimEffect(edl: Edl, effectId: string, edge: "start" | "end", t: Sec): Edl {
+  const MIN = 0.08;
+  for (const track of tracksOf(edl)) {
+    const item = track.items.find((e) => e.id === effectId);
+    if (!item) continue;
+    if (edge === "start") {
+      const end = item.at + item.dur;
+      const at = Math.max(0, Math.min(end - MIN, t));
+      return updateEffect(edl, effectId, { at, dur: end - at } as Partial<Effect>);
+    }
+    const dur = Math.max(MIN, t - item.at);
+    return updateEffect(edl, effectId, { dur } as Partial<Effect>);
+  }
+  return edl;
+}
+
+export const findEffect = (edl: Edl, effectId: string): Effect | null =>
+  tracksOf(edl).flatMap((t) => t.items).find((e) => e.id === effectId) ?? null;
+
+export const trackOfEffect = (edl: Edl, effectId: string): Track | null =>
+  tracksOf(edl).find((t) => t.items.some((e) => e.id === effectId)) ?? null;

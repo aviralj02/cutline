@@ -1,4 +1,4 @@
-import type { Clip, Edl, Sec } from "./types";
+import type { Clip, Crop, Edl, Sec } from "./types";
 
 /**
  * Snap to a frame boundary. Every op runs its results through this so the same
@@ -91,3 +91,86 @@ export const fmt = (t: Sec): string => {
   const cs = Math.floor((a % 1) * 100);
   return `${sign}${m}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 };
+
+export const FULL_FRAME: Crop = { x: 0, y: 0, w: 1, h: 1 };
+
+export const cropOf = (edl: Edl): Crop => edl.crop ?? FULL_FRAME;
+
+export const isCropped = (edl: Edl): boolean => {
+  const c = cropOf(edl);
+  return c.x !== 0 || c.y !== 0 || c.w !== 1 || c.h !== 1;
+};
+
+/** Pixel dimensions of the framed output, rounded to even numbers so the
+ *  result stays encodable. */
+export function outputSize(edl: Edl): { width: number; height: number } {
+  const c = cropOf(edl);
+  const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+  return { width: even(edl.width * c.w), height: even(edl.height * c.h) };
+}
+
+/* ---------------------------------------------------------------------------
+   Effects
+   ------------------------------------------------------------------------- */
+
+import type { Effect, Fade, Track, Zoom } from "./types";
+
+export const tracksOf = (edl: Edl): Track[] => edl.tracks ?? [];
+
+export const allEffects = (edl: Edl): Effect[] => tracksOf(edl).flatMap((t) => t.items);
+
+/** Smoothstep. A linear ramp on a zoom reads as a mechanical slide. */
+const ease = (u: number) => {
+  const c = Math.min(1, Math.max(0, u));
+  return c * c * (3 - 2 * c);
+};
+
+/**
+ * How far into an effect `t` sits, as 0..1 with the ends eased.
+ * Returns 0 outside the interval.
+ */
+export function envelope(item: { at: Sec; dur: Sec }, t: Sec, ramp: Sec): number {
+  if (t < item.at || t >= item.at + item.dur) return 0;
+  if (ramp <= 0) return 1;
+  const r = Math.min(ramp, item.dur / 2);
+  const inFrom = t - item.at;
+  const outTo = item.at + item.dur - t;
+  if (inFrom < r) return ease(inFrom / r);
+  if (outTo < r) return ease(outTo / r);
+  return 1;
+}
+
+/** The zoom in effect at `t`. Later lanes win, so the last one applies. */
+export function zoomAt(edl: Edl, t: Sec): { scale: number; x: number; y: number } | null {
+  let hit: Zoom | null = null;
+  for (const track of tracksOf(edl)) {
+    for (const item of track.items) {
+      if (item.kind !== "zoom") continue;
+      if (t >= item.at && t < item.at + item.dur) hit = item;
+    }
+  }
+  if (!hit) return null;
+  const u = envelope(hit, t, hit.ramp);
+  const scale = 1 + (hit.scale - 1) * u;
+  return scale <= 1.0001 ? null : { scale, x: hit.x, y: hit.y };
+}
+
+/** The colour wash over the picture at `t`, if any. */
+export function fadeAt(edl: Edl, t: Sec): { color: string; alpha: number } | null {
+  let out: { color: string; alpha: number } | null = null;
+  for (const track of tracksOf(edl)) {
+    for (const item of track.items) {
+      if (item.kind !== "fade") continue;
+      if (t < item.at || t >= item.at + item.dur) continue;
+      const u = (t - item.at) / item.dur;
+      // in: starts opaque and clears. out: clears and closes. dip: both.
+      const alpha =
+        item.mode === "in" ? 1 - u : item.mode === "out" ? u : 1 - Math.abs(u * 2 - 1);
+      if (alpha > 0.001) out = { color: item.color, alpha: Math.min(1, alpha) };
+    }
+  }
+  return out;
+}
+
+export const isFade = (e: Effect): e is Fade => e.kind === "fade";
+export const isZoom = (e: Effect): e is Zoom => e.kind === "zoom";
