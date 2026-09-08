@@ -1,4 +1,101 @@
 @import "tailwindcss";
 
-html, body { height: 100%; background: #0b0b0d; }
-* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.15) transparent; }
+/* --------------------------------------------------------------------------
+   Cutline design tokens
+
+   Grounded in the cutting room, not in dark-SaaS convention. The greys are
+   genuinely neutral (equal R/G/B) because anything tinted contaminates the
+   footage you are judging next to it.
+   -------------------------------------------------------------------------- */
+@theme {
+  /* Chrome. A neutral graphite ramp — no blue or purple cast. */
+  --color-shell:   #101010;  /* app background, deepest */
+  --color-panel:   #171717;  /* panels and rails */
+  --color-raised:  #202020;  /* inputs, hovered rows */
+  --color-edge:    #2b2b2b;  /* borders that need to be seen */
+
+  /* The mat behind the image. Mid-grey on purpose: a black surround makes
+     footage read brighter than it is. This is the one surface that is not
+     part of the chrome ramp. */
+  --color-mat:     #303030;
+
+  /* Ink */
+  --color-ink:     #ededed;
+  --color-ink-2:   #a3a3a3;
+  --color-ink-3:   #8f8f8f;
+
+  /* Two accents, each with a fixed meaning.
+     leader — the agent, and the primary action.
+     grease — cuts and destruction, after the china markers editors mark
+              film with. Never used for emphasis. */
+  --color-leader:  #e0a92e;
+  --color-leader-hi: #f2bf46;
+  --color-grease:  #d2503f;
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  /* Softened throughout. Radius still encodes scale — the larger the
+     surface, the larger the curve — but nothing is hard-cornered now. */
+  --radius-sm: 7px;     /* clips, keycaps, segment buttons */
+  --radius-ctl: 10px;   /* buttons, inputs, menus */
+  --radius-gate: 14px;  /* the image, the track */
+  --radius-panel: 16px; /* panels and the drop target */
+}
+
+@layer base {
+  html, body { height: 100%; }
+  body {
+    background: var(--color-shell);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Timecode must never reflow as digits change. */
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* Browser surfaces belong to the design too: the caret, the selection,
+     the focus ring and the scrollbar all ship with defaults otherwise. */
+  :focus-visible {
+    outline: 2px solid var(--color-leader);
+    outline-offset: 2px;
+    border-radius: var(--radius-ctl);
+  }
+  ::selection { background: color-mix(in srgb, var(--color-leader) 32%, transparent); }
+  input, textarea { caret-color: var(--color-leader); }
+
+  * { scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: #333;
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #454545; background-clip: content-box; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* A confirmation should arrive, not blink into being. Motion that answers an
+   action is welcome; this is the only place a dialog uses it. */
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(-6px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes backdrop-in { from { opacity: 0 } to { opacity: 1 } }
+dialog[open] { animation: dialog-in .18s cubic-bezier(.2,.7,.3,1) both; }
+dialog[open]::backdrop { animation: backdrop-in .18s ease-out both; }
+
+/* The one orchestrated moment: the editor assembling after import. */
+@keyframes gate-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.gate-in { animation: gate-in .32s cubic-bezier(.2,.7,.3,1) both; }

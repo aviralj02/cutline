@@ -4,13 +4,14 @@ import { useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import * as vcs from "@/lib/vcs/repo";
 import { fmt } from "@/lib/edl/query";
+import { BranchIcon, Button, Chip, PanelHeader, Timecode, UndoIcon } from "@/components/ui";
 
 const ago = (t: number) => {
   const s = Math.floor((Date.now() - t) / 1000);
   if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
+  return `${Math.floor(s / 86400)} d ago`;
 };
 
 export default function History() {
@@ -28,31 +29,26 @@ export default function History() {
   const branches = Object.keys(repo.branches);
 
   return (
-    <div className="flex min-h-0 flex-col border-t border-white/8">
-      <div className="flex items-center gap-2 px-4 py-3">
-        <span className="text-[11px] font-medium tracking-wide text-white/50">VERSIONS</span>
-        <span className="rounded bg-white/8 px-1.5 py-0.5 font-mono text-[10px] text-[#f5b544]">
-          {repo.current}
-        </span>
-        <button
+    <div className="flex min-h-0 flex-1 flex-col border-t border-edge">
+      <PanelHeader title="Versions">
+        <Chip tone="leader">{repo.current}</Chip>
+        <Button
           onClick={() => setNaming((v) => !v)}
-          className="ml-auto text-[11px] text-white/40 transition hover:text-white"
-          title="Fork this version into a named variant"
+          icon={<BranchIcon size={13} />}
+          title="Fork this version so you can keep two cuts side by side"
         >
-          + variant
-        </button>
-      </div>
+          Variant
+        </Button>
+      </PanelHeader>
 
       {branches.length > 1 && (
-        <div className="flex flex-wrap gap-1.5 px-4 pb-2">
+        <div className="flex flex-wrap gap-1 border-b border-edge px-3 py-2">
           {branches.map((b) => (
             <button
               key={b}
               onClick={() => switchBranch(b)}
-              className={`rounded-full px-2 py-0.5 text-[11px] transition ${
-                b === repo.current
-                  ? "bg-[#f5b544] text-black"
-                  : "border border-white/10 text-white/50 hover:text-white"
+              className={`rounded-ctl px-2.5 py-1 text-[12px] transition-[background-color,color,transform] duration-150 active:scale-[.97] ${
+                b === repo.current ? "bg-leader text-black" : "text-ink-2 hover:bg-white/[.07] hover:text-ink"
               }`}
             >
               {b}
@@ -70,19 +66,19 @@ export default function History() {
             setName("");
             setNaming(false);
           }}
-          className="px-4 pb-2"
+          className="border-b border-edge px-3 py-2"
         >
           <input
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="tiktok-cut"
-            className="w-full rounded bg-white/5 px-2 py-1 text-xs text-white outline-none ring-1 ring-white/10 focus:ring-[#f5b544]/50"
+            placeholder="Name this variant"
+            className="w-full rounded-ctl border border-edge bg-raised px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-3 focus:border-leader/50"
           />
         </form>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+      <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {commits.map((c) => {
           const parent = c.parent ? repo.commits[c.parent] : null;
           const d = vcs.diff(parent?.edl ?? null, c.edl);
@@ -90,40 +86,39 @@ export default function History() {
           return (
             <div
               key={c.id}
-              className={`group relative rounded-md px-2.5 py-2 transition ${
-                isHead ? "bg-white/[.06]" : "hover:bg-white/[.03]"
-              }`}
+              className={`group relative flex gap-2.5 px-3 py-2 ${isHead ? "bg-raised/60" : "hover:bg-raised/35"}`}
             >
-              <div className="flex items-center gap-2">
+              {/* A continuous rail, so the list reads as one lineage. */}
+              <div className="relative flex w-2 justify-center">
+                <span className="absolute inset-y-[-8px] w-px bg-edge" />
                 <span
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                    c.author === "agent" ? "bg-[#f5b544]" : "bg-white/40"
+                  className={`relative mt-1.5 h-[7px] w-[7px] rounded-full ring-[3px] ring-panel ${
+                    c.author === "agent" ? "bg-leader" : "bg-ink-3"
                   }`}
                 />
-                <span className="truncate text-xs text-white/80">{c.message}</span>
-                {isHead && (
-                  <span className="ml-auto shrink-0 text-[10px] font-medium text-[#f5b544]">now</span>
-                )}
               </div>
-              <div className="mt-0.5 flex items-center gap-1.5 pl-3.5 text-[10px] text-white/30">
-                <span>{ago(c.at)}</span>
-                <span>·</span>
-                <span className="font-mono">{fmt(vcs.stats(c.edl).duration)}</span>
-                {parent && d.summary !== "no change" && (
-                  <>
-                    <span>·</span>
-                    <span className="text-white/45">{d.summary}</span>
-                  </>
-                )}
-                {!isHead && (
-                  <button
-                    onClick={() => restore(c.id)}
-                    className="ml-auto opacity-0 transition group-hover:opacity-100 hover:text-[#f5b544]"
-                  >
-                    restore
-                  </button>
-                )}
+
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[12.5px] text-ink">{c.message}</p>
+                <p className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-3">
+                  <Timecode dim className="!text-[11px]">
+                    {fmt(vcs.stats(c.edl).duration)}
+                  </Timecode>
+                  {parent && d.summary !== "no change" && <span className="text-ink-2">{d.summary}</span>}
+                  <span className="ml-auto">{ago(c.at)}</span>
+                </p>
               </div>
+
+              {!isHead && (
+                <Button
+                  onClick={() => restore(c.id)}
+                  icon={<UndoIcon size={13} />}
+                  className="absolute right-2 top-1.5 opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
+                  title="Bring this version back as a new version"
+                >
+                  Restore
+                </Button>
+              )}
             </div>
           );
         })}
