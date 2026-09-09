@@ -1,6 +1,6 @@
 import { expect, test, describe } from "bun:test";
 import { emptyEdl, type Edl } from "../src/lib/edl/types";
-import { duration, isCropped, outputSize, placed, resolve } from "../src/lib/edl/query";
+import { dropSlot, duration, isCropped, outputSize, placed, resolve } from "../src/lib/edl/query";
 import {
   addText, deleteClip, insertClip, moveClip, resetCrop, rippleDelete,
   rippleDeleteMany, setCrop, setCropAspect, setSpeed, splitAt, trimTimeline,
@@ -141,6 +141,61 @@ describe("other ops", () => {
     e = insertClip(e, { src: "m2", in: 0, out: 10 });
     e = moveClip(e, e.clips[1].id, 0);
     expect(e.clips.map((c) => c.src)).toEqual(["m2", "m1"]);
+  });
+
+  /**
+   * Where a carried clip lands. The track has no free positions, so a drag can
+   * only answer "which slot", and the answer is read off the layout of the
+   * clips that are staying put.
+   */
+  describe("dropSlot", () => {
+    /** Three clips: a 10s, b 20s, c 30s. */
+    const three = (): Edl => {
+      let e = insertClip(emptyEdl(30, 1920, 1080), { src: "a", in: 0, out: 10 });
+      e = insertClip(e, { src: "b", in: 0, out: 20 });
+      e = insertClip(e, { src: "c", in: 0, out: 30 });
+      return e;
+    };
+
+    test("dropping before everything lands first", () => {
+      const e = three();
+      expect(dropSlot(e, e.clips[2].id, 0)).toBe(0);
+    });
+
+    test("a clip stays put over its own slot", () => {
+      const e = three();
+      // Carrying b: the others are a (0-10) and c (10-40). Its home centre is
+      // the midpoint of a's end and c's start.
+      expect(dropSlot(e, e.clips[1].id, 10)).toBe(1);
+    });
+
+    test("crossing a neighbour's midpoint changes the slot", () => {
+      const e = three();
+      // Others without c are a (0-10) and b (10-30). b's midpoint is 20.
+      expect(dropSlot(e, e.clips[2].id, 19.9)).toBe(1);
+      expect(dropSlot(e, e.clips[2].id, 20.1)).toBe(2);
+    });
+
+    test("dropping past the end lands last", () => {
+      const e = three();
+      expect(dropSlot(e, e.clips[0].id, 999)).toBe(2);
+    });
+
+    test("the answer never exceeds the number of other clips", () => {
+      const e = three();
+      for (const t of [-5, 0, 7, 12, 31, 500]) {
+        const slot = dropSlot(e, e.clips[1].id, t);
+        expect(slot).toBeGreaterThanOrEqual(0);
+        expect(slot).toBeLessThanOrEqual(2);
+      }
+    });
+
+    test("moving to the slot it reports is a no-op at home", () => {
+      const e = three();
+      const id = e.clips[1].id;
+      const moved = moveClip(e, id, dropSlot(e, id, 10));
+      expect(moved.clips.map((c) => c.src)).toEqual(["a", "b", "c"]);
+    });
   });
 
   test("trimTimeline keeps the requested window", () => {

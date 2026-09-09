@@ -31,6 +31,9 @@ export default function Transport() {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (el && ["INPUT", "TEXTAREA"].includes(el.tagName)) return;
+      // Alt+Arrow reorders the selected clip on the timeline; the playhead
+      // must stay put, or one keystroke does two unrelated things.
+      if (e.altKey) return;
       // Shift jumps a second, the way a jog wheel coarsens.
       if (e.key === "ArrowLeft") { e.preventDefault(); step(e.shiftKey ? -edl.fps : -1); }
       if (e.key === "ArrowRight") { e.preventDefault(); step(e.shiftKey ? edl.fps : 1); }

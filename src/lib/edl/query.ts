@@ -31,6 +31,18 @@ export function placed(edl: Edl): Placed[] {
   return out;
 }
 
+export function dropSlot(edl: Edl, clipId: string, centre: Sec): number {
+  const others = placed(edl).filter((p) => p.clip.id !== clipId);
+  let acc = 0;
+  for (let i = 0; i < others.length; i++) {
+    const d = others[i].end - others[i].start;
+    // Past the halfway line of a clip is past that clip.
+    if (centre < acc + d / 2) return i;
+    acc += d;
+  }
+  return others.length;
+}
+
 export const duration = (edl: Edl): Sec => {
   const video = placed(edl).at(-1)?.end ?? 0;
   const text = edl.text.reduce((m, t) => Math.max(m, t.at + t.dur), 0);

@@ -17,6 +17,7 @@ import {
   FolderPlus,
   Film,
   Gauge,
+  Minus,
   GitBranch,
   Pause,
   Play,
@@ -63,6 +64,15 @@ export const CloseIcon = (p: IconProps) => <X {...line} {...p} />;
 export const FadeTrackIcon = (p: IconProps) => <Blend {...line} {...p} />;
 export const ZoomTrackIcon = (p: IconProps) => <ZoomIn {...line} {...p} />;
 export const TextTrackIcon = (p: IconProps) => <Type {...line} {...p} />;
+
+/**
+ * Timeline magnification, not the zoom effect. A stepper either side of a
+ * readout is what every editor uses for this, and it shares its glyph with
+ * `AddIcon` on purpose — flanking "3×" it can only mean one thing, whereas a
+ * magnifier would read as `ZoomTrackIcon`, which is a different feature.
+ */
+export const ScaleInIcon = (p: IconProps) => <Plus {...line} {...p} />;
+export const ScaleOutIcon = (p: IconProps) => <Minus {...line} {...p} />;
 
 export const FocusIcon = (p: IconProps) => <Crosshair {...line} {...p} />;
 
