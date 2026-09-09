@@ -1,9 +1,29 @@
 /**
  * Media lives in the Origin Private File System: on the user's disk, in the
  * browser's sandbox. Nothing uploads, so import is instant regardless of file
- * size and a 4GB source costs nothing to host.
+ * size and a multi-gigabyte source costs nothing to host — the only ceiling is
+ * the origin's storage quota, which `checkRoom` asks about before an import
+ * starts rather than failing halfway through one.
  */
 const DIR = "media";
+
+/**
+ * The ceiling on a single import. It is deliberately far above what anyone
+ * drops into a browser editor: nothing here reads the file into memory — it is
+ * written to disk as a stream and analysed in chunks — so the number exists
+ * only so that a 40GB drop fails with a sentence instead of a stalled tab.
+ */
+export const MAX_FILE_BYTES = 16 * 1024 ** 3;
+
+export const humanBytes = (n: number): string => {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${n < 10 && i > 1 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+};
 
 async function dir() {
   const root = await navigator.storage.getDirectory();
@@ -12,6 +32,42 @@ async function dir() {
 
 export const opfsSupported = () =>
   typeof navigator !== "undefined" && !!navigator.storage?.getDirectory;
+
+/**
+ * Ask whether a file can be stored before spending minutes analysing it.
+ * The quota is per-origin and varies with the disk, so the honest answer comes
+ * from the browser rather than from a constant.
+ */
+export async function checkRoom(file: File): Promise<string | null> {
+  if (file.size > MAX_FILE_BYTES) {
+    return `${file.name} is ${humanBytes(file.size)}. The limit is ${humanBytes(MAX_FILE_BYTES)}.`;
+  }
+  try {
+    const { used, quota } = await usage();
+    // Headroom for the project record and the browser's own overhead.
+    const free = quota - used - 64 * 1024 * 1024;
+    if (quota > 0 && file.size > free) {
+      return `${file.name} is ${humanBytes(file.size)} but this browser has ${humanBytes(Math.max(0, free))} free for Cutline. Free up space, or start a new project to clear the current footage.`;
+    }
+  } catch {
+    /* no estimate available; let the write decide */
+  }
+  return null;
+}
+
+/**
+ * Ask the browser to stop treating this origin's storage as evictable. It is
+ * a request, not a guarantee, and a refusal is not a failure — the footage is
+ * still written either way.
+ */
+export async function keepStorage(): Promise<boolean> {
+  try {
+    if (await navigator.storage?.persisted?.()) return true;
+    return (await navigator.storage?.persist?.()) ?? false;
+  } catch {
+    return false;
+  }
+}
 
 export async function putMedia(id: string, file: File): Promise<void> {
   const d = await dir();

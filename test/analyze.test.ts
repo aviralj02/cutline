@@ -1,5 +1,8 @@
 import { expect, test, describe } from "bun:test";
-import { detectSilences, waveform, toWav16k, type AudioAnalysis } from "../src/lib/media/analyze";
+import {
+  detectSilences, silencesFromLoudness, waveform, toWav16k, type AudioAnalysis,
+} from "../src/lib/media/analyze";
+import { MAX_FILE_BYTES, humanBytes } from "../src/lib/media/opfs";
 
 const SR = 16000;
 
@@ -96,5 +99,68 @@ describe("waveform + wav", () => {
   test("wav is far smaller than the source audio", () => {
     const a = synth(60, []); // 60s @ 16k float32 = 3.8MB in memory
     expect(toWav16k(a).size).toBeLessThan(2_000_000); // ~1MB/min on the wire
+  });
+});
+
+/**
+ * The streaming path builds a loudness curve without ever holding the audio,
+ * so the detector has to work from a curve as well as from samples. These
+ * cover the seam between them — the same detector, two ways in.
+ */
+describe("silencesFromLoudness", () => {
+  /** The curve the streaming summariser would produce for `synth`. */
+  const curve = (a: AudioAnalysis, hopSec = 0.01) => {
+    const hop = Math.round(hopSec * a.sampleRate);
+    const frames = Math.floor(a.samples.length / hop);
+    const db = new Float32Array(frames);
+    for (let f = 0; f < frames; f++) {
+      let sum = 0;
+      for (let i = f * hop; i < (f + 1) * hop; i++) sum += a.samples[i] * a.samples[i];
+      db[f] = 20 * Math.log10(Math.sqrt(sum / hop) + 1e-9);
+    }
+    return db;
+  };
+
+  test("agrees with the buffered detector on the same audio", () => {
+    const a = synth(30, [[5, 7], [12, 13.5], [22, 25]]);
+    const fromSamples = detectSilences(a, { padding: 0 }).ranges;
+    const fromCurve = silencesFromLoudness(curve(a), 0.01, { padding: 0 }).ranges;
+    expect(fromCurve.length).toBe(fromSamples.length);
+    for (let i = 0; i < fromCurve.length; i++) {
+      expect(near(fromCurve[i][0], fromSamples[i][0], 0.05)).toBe(true);
+      expect(near(fromCurve[i][1], fromSamples[i][1], 0.05)).toBe(true);
+    }
+  });
+
+  /**
+   * An audio track rarely starts at the same instant as the video. The curve
+   * covers only the audio, so its start has to be added back — otherwise every
+   * cut lands early by the length of that offset, and the empty stretch before
+   * the audio is reported as a pause that is really just the video's head.
+   */
+  test("an offset moves the answers into container time", () => {
+    const a = synth(20, [[8, 11]]);
+    const plain = silencesFromLoudness(curve(a), 0.01, { padding: 0 }).ranges;
+    const shifted = silencesFromLoudness(curve(a), 0.01, { padding: 0 }, 0.56).ranges;
+    expect(shifted.length).toBe(plain.length);
+    expect(near(shifted[0][0], plain[0][0] + 0.56, 0.001)).toBe(true);
+    expect(near(shifted[0][1], plain[0][1] + 0.56, 0.001)).toBe(true);
+  });
+
+  test("an empty curve is not one long silence", () => {
+    expect(silencesFromLoudness(new Float32Array(0), 0.01).ranges).toEqual([]);
+  });
+});
+
+describe("humanBytes", () => {
+  test("reads as a person would say it", () => {
+    expect(humanBytes(512)).toBe("512 B");
+    expect(humanBytes(1024)).toBe("1 KB");
+    expect(humanBytes(16 * 1024 ** 3)).toBe("16 GB");
+    expect(humanBytes(2.5 * 1024 ** 3)).toBe("2.5 GB");
+  });
+
+  test("the import ceiling is stated in whole units", () => {
+    expect(humanBytes(MAX_FILE_BYTES)).toBe("16 GB");
   });
 });

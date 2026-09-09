@@ -9,8 +9,11 @@ import { emptyEdl } from "./edl/types";
 import * as vcs from "./vcs/repo";
 import type { Author, Commit, Repo } from "./vcs/repo";
 import type { Analysis, MediaInfo } from "./agent/tools";
-import { decodeAudio, detectSilences, probeVideo, waveform, type Probe } from "./media/analyze";
-import { putMedia } from "./media/opfs";
+import {
+  decodeAudio, detectSilences, probeVideo, silencesFromLoudness, summariseAudio, waveform,
+  type Probe,
+} from "./media/analyze";
+import { checkRoom, keepStorage, putMedia } from "./media/opfs";
 import { loadProject, saveProject, clearProject } from "./db";
 
 export interface ChatEntry {
@@ -140,20 +143,45 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async analyzeFile(file) {
+    // Ask about room before doing any work. A file that cannot be stored
+    // should say so in a second, not after a minute of analysis.
+    const problem = await checkRoom(file);
+    if (problem) throw new Error(problem);
+
     const id = nanoid(10);
     const meta = await probeVideo(file);
+    set({ status: `Storing ${file.name}…` });
     await putMedia(id, file);
+    // Asked once there is something worth keeping. Some browsers put this to
+    // the user, and a permission prompt makes more sense over footage that is
+    // already stored than over one that may yet be refused.
+    void keepStorage();
 
     let silences: Array<[number, number]> = [];
     let wave: number[] = [];
     if (meta.hasAudio) {
+      const pct = (f: number) => set({ status: `Analysing audio… ${Math.round(f * 100)}%` });
       try {
-        const audio = await decodeAudio(file);
-        // Store raw, unpadded detections; padding is a per-request decision.
-        silences = detectSilences(audio, { minSilence: 0.2, padding: 0 }).ranges;
-        wave = Array.from(waveform(audio, 1600));
+        // The streaming path holds one chunk at a time, so the length of the
+        // file stops being the thing that decides whether an import survives.
+        const sum = await summariseAudio(file, { buckets: 1600, onProgress: pct });
+        if (sum) {
+          // Store raw, unpadded detections; padding is a per-request decision.
+          silences = silencesFromLoudness(sum.db, sum.hopSec, { minSilence: 0.2, padding: 0 }, sum.startSec).ranges;
+          wave = Array.from(sum.wave);
+        }
       } catch {
-        set({ status: "Audio could not be decoded — continuing without silence analysis." });
+        // A codec WebCodecs will not decode can still go through the Web Audio
+        // decoder, which reads the whole track at once — so it is the fallback
+        // and not the default.
+        try {
+          set({ status: "Analysing audio…" });
+          const audio = await decodeAudio(file);
+          silences = detectSilences(audio, { minSilence: 0.2, padding: 0 }).ranges;
+          wave = Array.from(waveform(audio, 1600));
+        } catch {
+          set({ status: "Audio could not be read — continuing without silence analysis." });
+        }
       }
     }
     const info: MediaInfo = { id, name: file.name, duration: meta.duration };
@@ -163,10 +191,10 @@ export const useStore = create<State>((set, get) => ({
   async importFile(file) {
     set({ status: "Reading file…", busy: true });
     try {
-      // Decoding the whole audio track is the one slow step on import. It
-      // buys the silence map that makes the agent useful, so it happens once
-      // here rather than on every request.
-      set({ status: "Analysing audio…" });
+      // Reading the audio is the one slow step on import. It buys the silence
+      // map that makes the agent useful, so it happens once here rather than
+      // on every request, and reports progress because a long file otherwise
+      // looks like a hung tab.
       const { id, meta, info, silences, wave } = await get().analyzeFile(file);
 
       const edl = insertClip(
@@ -276,7 +304,15 @@ export const useStore = create<State>((set, get) => ({
       }));
       get().apply(next, `Add ${file.name}`);
     } catch (err) {
-      set({ busy: false, status: err instanceof Error ? err.message : "Could not add that file." });
+      // `status` is only read by the import screen, and this runs inside the
+      // editor — so the reason goes where the other facts about the footage
+      // are, or a refused file fails in silence.
+      const text = err instanceof Error ? err.message : "Could not add that file.";
+      set((s) => ({
+        busy: false,
+        status: text,
+        chat: [...s.chat, { id: nanoid(6), role: "system", text, failed: true }],
+      }));
     }
   },
 

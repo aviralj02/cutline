@@ -44,7 +44,10 @@ export default function Chat() {
       {notes.length > 0 && (
         <div className="border-b border-edge px-3 py-2.5">
           {notes.map((n) => (
-            <p key={n.id} className="text-[12px] leading-relaxed text-ink-2">
+            <p
+              key={n.id}
+              className={`text-[12px] leading-relaxed ${n.failed ? "text-grease" : "text-ink-2"}`}
+            >
               {n.text}
             </p>
           ))}
