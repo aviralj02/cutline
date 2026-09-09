@@ -378,6 +378,16 @@ log("\n14. Ruler labels never collide, at any speed");
   await page.locator("[data-clip]").first().click();
   await page.waitForTimeout(300);
 
+  // Suppressing a label that would be cut in half is one line away from
+  // suppressing all of them, and a collision count of zero cannot tell the
+  // difference — so assert they are actually there.
+  const labels = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('[aria-label="Playhead"] span.tnum')].map((e) => e.textContent));
+  const shown = await labels();
+  check("the ruler is actually labelled", shown.length >= 3, `${shown.length} labels`);
+  check("and it starts at zero", shown[0] === "0:00.00", shown[0] ?? "none");
+
   check("labels are clear at 1x", (await overlaps()) === 0);
 
   await page.getByRole("button", { name: "0.5×", exact: true }).click();
@@ -389,8 +399,9 @@ log("\n14. Ruler labels never collide, at any speed");
   check("labels stay clear at 2x", (await overlaps()) === 0);
 
   // Narrow windows are where labels actually collide: the ruler loses width
-  // while the number of ticks stays the same.
-  await page.setViewportSize({ width: 820, height: 720 });
+  // while the number of ticks stays the same. 1024 is the narrowest the
+  // editor claims to work at — below it the window gets a wall instead.
+  await page.setViewportSize({ width: 1024, height: 720 });
   await page.waitForTimeout(600);
   check("labels are clear on a narrow window", (await overlaps()) === 0);
 
@@ -645,8 +656,13 @@ log("\n19. The zoom anchors exactly on its marker");
 
   const zoomItem = await page.locator("[data-effect]").last().boundingBox();
   const lane = await page.getByRole("slider", { name: "Playhead" }).boundingBox();
+  // Seek relative to the material, not to the ruler: the ruler holds its
+  // extent after a trim, so its far end can be past the last frame — where
+  // there is nothing to sample.
+  const lastClip = await page.locator("[data-clip]").last().boundingBox();
+  const endOfEdit = lastClip.x + lastClip.width - 6;
 
-  await page.mouse.click(lane.x + lane.width * 0.92, lane.y + lane.height / 2);
+  await page.mouse.click(endOfEdit, lane.y + lane.height / 2);
   await page.waitForTimeout(500);
   const flat = await dot();
 
@@ -833,7 +849,7 @@ log("\n23. The transport never swallows a toolbar click");
     });
   };
 
-  for (const w of [1680, 1440, 1200, 1024, 900]) {
+  for (const w of [1680, 1440, 1280, 1100, 1024]) {
     const n = await stolenAt(w);
     check(`no clicks stolen at ${w}px`, n === 0, n < 0 ? "transport not found" : `${n} stolen`);
   }
@@ -842,7 +858,217 @@ log("\n23. The transport never swallows a toolbar click");
 }
 
 // ---------------------------------------------------------------------------
-log("\n24. New project asks before destroying the work");
+log("\n24. The timeline holds its room, scrolls, and refuses a narrow window");
+{
+  const scroller = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('[aria-label="Playhead"]').closest("div.overflow-x-auto");
+      return { w: el.scrollWidth, view: el.clientWidth, left: Math.round(el.scrollLeft) };
+    });
+  const dur = () =>
+    page.evaluate(() => +document.querySelector('[aria-label="Playhead"]').getAttribute("aria-valuemax"));
+  const clipBox = () => page.locator("[data-clip]").last().boundingBox();
+
+  const fitBtn = page.getByRole("button", { name: "Fit", exact: true });
+  if (await fitBtn.isEnabled()) await fitBtn.click();
+  await page.waitForTimeout(400);
+
+  // --- a trim must not rescale the timeline under the hand doing it -------
+  const d0 = await dur();
+  const b0 = await clipBox();
+  // An untouched clip is the witness: if the timeline refits, every clip is
+  // redrawn wider, including the ones the trim never touched.
+  const witness0 = await page.locator("[data-clip]").first().boundingBox();
+  await page.mouse.move(b0.x + b0.width - 3, b0.y + b0.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b0.x + b0.width * 0.6, b0.y + b0.height / 2, { steps: 16 });
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  const d1 = await dur();
+  const b1 = await clipBox();
+
+  check("a trim shortens the edit", d1 < d0 - 0.5, `${d0.toFixed(2)}s to ${d1.toFixed(2)}s`);
+  // If the timeline had refit, the shorter clip would occupy the same pixels.
+  const shrank = b1.width / b0.width;
+  check("the clip shrinks on screen with the edit", shrank < 0.95, `width ×${shrank.toFixed(2)}`);
+  const witness1 = await page.locator("[data-clip]").first().boundingBox();
+  check("an untrimmed clip does not move or resize",
+        Math.abs(witness1.width - witness0.width) < 1.5 && Math.abs(witness1.x - witness0.x) < 1.5,
+        `width ${witness0.width.toFixed(1)} to ${witness1.width.toFixed(1)}px`);
+
+  // --- and the room left behind is usable --------------------------------
+  await page.mouse.move(b1.x + b1.width - 3, b1.y + b1.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b1.x + b1.width * 1.4, b1.y + b1.height / 2, { steps: 16 });
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  const d2 = await dur();
+  check("the held room can be trimmed back into", d2 > d1 + 0.5, `${d1.toFixed(2)}s to ${d2.toFixed(2)}s`);
+
+  // --- scale and scroll ---------------------------------------------------
+  const flat = await scroller();
+  check("at 1x the timeline fits the window", flat.w <= flat.view + 2, `${flat.w} in ${flat.view}`);
+
+  await page.getByRole("button", { name: "Show less time" }).click();
+  await page.getByRole("button", { name: "Show less time" }).click();
+  await page.waitForTimeout(400);
+  const wide = await scroller();
+  check("zooming in makes it scrollable", wide.w > wide.view * 2, `${wide.w} in ${wide.view}`);
+
+  const bar = page.getByRole("slider", { name: "Timeline position" });
+  check("a position bar appears when there is more to see", (await bar.count()) === 1);
+  const bb = await bar.boundingBox();
+  await page.mouse.click(bb.x + bb.width * 0.6, bb.y + bb.height / 2);
+  await page.waitForTimeout(300);
+  const moved = await scroller();
+  check("the position bar moves the view", moved.left > 100, `scrolled to ${moved.left}`);
+
+  // The label column is frozen over the lanes, so a clip scrolled underneath
+  // it must not show through.
+  const covered = await page.evaluate(() => {
+    const label = [...document.querySelectorAll("span")].find((e) => e.textContent === "Video");
+    const gut = label.closest("div");
+    const g = gut.getBoundingClientRect();
+    return [0.2, 0.5, 0.8].every((f) => {
+      const hit = document.elementFromPoint(g.left + g.width / 2, g.top + g.height * f);
+      return hit && (gut === hit || gut.contains(hit));
+    });
+  });
+  check("the label column stays opaque over a scrolled lane", covered);
+
+  // --- labels stay legible at every magnification -------------------------
+  const gapNow = () =>
+    page.evaluate(() => {
+      const row = document.querySelector('[aria-label="Playhead"]');
+      const boxes = [...row.querySelectorAll("span.tnum")]
+        .map((el) => el.getBoundingClientRect())
+        .filter((b) => b.width > 0)
+        .sort((a, b) => a.left - b.left);
+      let min = Infinity;
+      for (let i = 1; i < boxes.length; i++) min = Math.min(min, boxes[i].left - boxes[i - 1].right);
+      return boxes.length > 1 ? min : 999;
+    });
+  let worst = Infinity;
+  for (let i = 0; i < 12; i++) {
+    worst = Math.min(worst, await gapNow());
+    const zin = page.getByRole("button", { name: "Show less time" });
+    if (await zin.isDisabled()) break;
+    await zin.click();
+    await page.waitForTimeout(220);
+  }
+  check("ruler labels keep clear space at every scale", worst >= 6, `${worst.toFixed(1)}px at the worst`);
+
+  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  await page.waitForTimeout(400);
+  const refit = await scroller();
+  check("Fit returns the whole edit to the window", refit.w <= refit.view + 2, `${refit.w} in ${refit.view}`);
+  const tail = await clipBox();
+  const track = await page.getByRole("slider", { name: "Playhead" }).boundingBox();
+  check("Fit releases the room a trim held open",
+        Math.abs(tail.x + tail.width - (track.x + track.width)) < 8,
+        `edit ends ${(track.x + track.width - tail.x - tail.width).toFixed(1)}px from the end of the ruler`);
+
+  // --- the editor refuses a narrow window rather than shrinking into one ---
+  await page.setViewportSize({ width: 420, height: 820 });
+  await page.waitForTimeout(500);
+  check("a phone gets a wall, not a broken editor",
+        (await page.getByText("Cutline needs a wider screen").count()) === 1 &&
+        (await page.locator("[data-clip]").count()) === 0);
+
+  // The floor is a claim about where the editor works, so check both sides of
+  // it rather than only somewhere obviously too small.
+  await page.setViewportSize({ width: 1000, height: 860 });
+  await page.waitForTimeout(500);
+  check("just under the floor still gets the wall",
+        (await page.locator("[data-clip]").count()) === 0,
+        "1000px");
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await page.waitForTimeout(500);
+  check("the floor itself gets the editor",
+        (await page.locator("[data-clip]").count()) > 0, "1024px");
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(500);
+  check("and the editor comes back with the project intact",
+        (await page.locator("[data-clip]").count()) > 0);
+}
+
+// ---------------------------------------------------------------------------
+log("\n25. Split pieces can be put back in a different order");
+{
+  const order = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll("[data-clip]")]
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+        .map((e) => e.dataset.clip));
+  const versions = () => page.getByRole("button", { name: "Restore" }).count();
+
+  const before = await order();
+  check("there is more than one clip to reorder", before.length > 1, `${before.length} clips`);
+
+  // Carry the last clip to the front.
+  const last = await page.locator("[data-clip]").last().boundingBox();
+  const track = await page.getByRole("slider", { name: "Playhead" }).boundingBox();
+  const v0 = await versions();
+  await page.mouse.move(last.x + last.width / 2, last.y + last.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(last.x + last.width / 2 - 80, last.y + last.height / 2, { steps: 6 });
+  await page.mouse.move(track.x + 10, last.y + last.height / 2, { steps: 18 });
+  await page.waitForTimeout(200);
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+
+  const after = await order();
+  check("the carried clip lands at the front", after[0] === before.at(-1),
+        `${before.at(-1)?.slice(0, 4)} is now first`);
+  check("nothing is lost or duplicated in the move",
+        after.length === before.length && new Set(after).size === after.length,
+        `${after.length} clips`);
+  check("a reorder is exactly one version", (await versions()) - v0 === 1,
+        `${(await versions()) - v0} added`);
+
+  // A click is not a drag: selecting must not shuffle the track.
+  const settled = await order();
+  await page.locator("[data-clip]").nth(1).click();
+  await page.waitForTimeout(300);
+  check("clicking a clip still only selects it",
+        (await order()).join() === settled.join());
+
+  /**
+   * Alt+Arrow reorders the selection. It is also the regression guard for a
+   * subtler bug: Transport owns a window keydown listener too and is mounted
+   * first, so it runs first and moves the playhead. React flushes that
+   * synchronously, and while the Timeline's shortcut effect re-registered on
+   * every edit that tore its own listener down mid-dispatch — a listener
+   * removed during dispatch is never called, so every arrow key reached the
+   * transport and stopped there.
+   */
+  const selected = await page.evaluate(
+    () => document.querySelector('[data-clip][style*="1.5px"]')?.dataset.clip ?? null,
+  );
+  const wasAt = (await order()).indexOf(selected);
+  await page.keyboard.press("Alt+ArrowLeft");
+  await page.waitForTimeout(400);
+  check("alt and an arrow move the selected clip",
+        (await order()).indexOf(selected) === wasAt - 1,
+        `position ${wasAt} to ${(await order()).indexOf(selected)}`);
+
+  // And the plain arrow must still belong to the playhead.
+  const at = () =>
+    page.evaluate(() => {
+      const m = /(\d+):(\d\d)\.(\d\d)\s*\//.exec(document.body.innerText);
+      return m ? +m[1] * 60 + +m[2] + +m[3] / 100 : -1;
+    });
+  const t0 = await at();
+  const o0 = (await order()).join();
+  await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(300);
+  check("a plain arrow still jogs the playhead", (await at()) > t0, `${t0} to ${await at()}`);
+  check("and jogging does not reorder anything", (await order()).join() === o0);
+}
+
+// ---------------------------------------------------------------------------
+log("\n26. New project asks before destroying the work");
 {
   const editorOpen = () => page.evaluate(() => document.body.innerText.includes("Timeline"));
   const dialogOpen = () => page.evaluate(() => !!document.querySelector("dialog[open]"));

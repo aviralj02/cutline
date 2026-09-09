@@ -6,9 +6,11 @@ import Preview from "@/components/Preview";
 import Timeline from "@/components/Timeline";
 import Transport from "@/components/Transport";
 import Chat from "@/components/Chat";
+import DesktopOnly, { MIN_WIDTH, useWindowWidth } from "@/components/DesktopOnly";
 import History from "@/components/History";
 import { Button, ConfirmDialog, IconButton, Logo, NewProjectIcon, RedoActionIcon, UndoActionIcon } from "@/components/ui";
 import { edlOf } from "@/lib/store";
+import { MAX_FILE_BYTES, humanBytes } from "@/lib/media/opfs";
 import * as vcs from "@/lib/vcs/repo";
 
 /**
@@ -83,11 +85,19 @@ function Start() {
               {busy ? status ?? "Working" : "Drop a video, or click to choose"}
             </p>
             <p className="mt-1.5 text-[12.5px] text-ink-3">
-              {busy ? "Running on your machine." : "MP4 or WebM."}
+              {busy ? "Running on your machine." : `MP4 or WebM, up to ${humanBytes(MAX_FILE_BYTES)}.`}
             </p>
           </div>
           <Perforations />
         </label>
+
+        {/* An import that fails leaves `busy` false, so the reason has to live
+            outside the panel that only speaks while work is happening. */}
+        {!busy && status && (
+          <p role="alert" className="mt-3 text-[12.5px] leading-relaxed text-grease">
+            {status}
+          </p>
+        )}
 
         <dl className="mt-7 grid grid-cols-3 gap-5 border-t border-edge pt-5">
           {[
@@ -120,6 +130,7 @@ export default function Page() {
   const edl = edlOf(repo);
   const canUndo = !!repo && vcs.canUndo(repo);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const windowWidth = useWindowWidth();
 
   // Name what is actually at stake, rather than asking "are you sure?".
   const atStake = useMemo(() => {
@@ -151,6 +162,9 @@ export default function Page() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [playing, setPlaying, undo, redo]);
+
+  // Before anything mounts, so no work is done for a screen that cannot use it.
+  if (windowWidth > 0 && windowWidth < MIN_WIDTH) return <DesktopOnly width={windowWidth} />;
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-shell">

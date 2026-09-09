@@ -77,6 +77,23 @@ edge) covers every effect, and anything added later inherits it.
   jumped out from under the cursor that had just used it.
 - **Selection is exclusive:** one inspector, one subject. Selecting a clip
   clears the selected effect and the reverse.
+- **A clip drag reorders; it does not reposition.** The track is contiguous by
+  construction, so "move" can only mean "change places". The carried clip snaps
+  into the slot the pointer is over rather than following the cursor freely —
+  a clip floating between slots would imply the track can hold it there, and it
+  cannot. `dropSlot()` picks the slot from the layout of the *other* clips,
+  which is the one thing that does not move during the drag; measuring against
+  the preview feeds the answer back into its own input and the order flickers
+  between two slots. Under 4px of travel is still a click, so selecting a clip
+  never shuffles the track.
+- **Register a global shortcut listener once.** `Timeline`'s keydown effect
+  depended on `edl`, so it re-registered on every edit — and that silently ate
+  every arrow key. `Transport` owns a window keydown listener too and mounts
+  first, so it runs first, moves the playhead, and React flushes that
+  synchronously; the flush re-ran the Timeline effect and removed its listener
+  *while the same event was still being dispatched*. A listener removed
+  mid-dispatch is never called. Keep the listener registered with `[]` deps and
+  read current values through a ref.
 - **Scrubbing lives on the ruler and nowhere else.** The track scrubbed as
   well while a clip was only ever something you selected. Once clips could be
   trimmed by dragging, one surface could not mean both "move the playhead" and
@@ -92,6 +109,29 @@ edge) covers every effect, and anything added later inherits it.
   eat the content between them — exactly the input silence detection produces.
 - **Analysis is stored raw.** Silence ranges are unpadded so the agent can
   retune thresholds per request without re-analysing audio.
+- **Analysis streams; it never holds the audio.** `summariseAudio` decodes
+  through Mediabunny's `AudioSampleSink` and folds each chunk into a loudness
+  curve and a peak envelope — a few thousand numbers, whatever the length.
+  `decodeAudio` (whole file to `arrayBuffer`, then `decodeAudioData`) is the
+  fallback for codecs WebCodecs will not take, and it is why an hour of 48kHz
+  stereo used to die on import at 1.4GB of decoded audio. Memory is now a
+  function of duration alone, ~4MB an hour, and the ceiling on an import is
+  disk rather than RAM.
+- **Times are container seconds.** The streamed curve starts at the first hop
+  that carries audio and adds that offset back (`AudioSummary.startSec`). An
+  audio track rarely begins exactly with the video — a MediaRecorder capture
+  starts about half a second in — and the hops before it hold no samples, so
+  they read −180 dBFS and the detector calls the head of the file a pause.
+  Container time is also the clock the video element seeks by, so it is the
+  only frame in which a cut means anything.
+- **The timeline holds its extent after a trim.** The ruler is drawn across
+  `span = max(duration, held)`, not the duration. A trim that shortened the
+  edit used to rescale the timeline under the hand doing the trimming: the
+  clip kept its width as its content shrank, the pointer slid off the handle,
+  and there was nowhere left to drag back out to. Fit records the current
+  length rather than clearing the hold — zeroing it measures the next shrink
+  against an already-shrinking draft and the timeline creeps a percent per
+  trim.
 
 ## Design guidelines
 
@@ -165,8 +205,19 @@ that looks dangerous.
 
 **A modal `<dialog>` needs `m-auto`.** The UA centres it with
 `inset: 0; margin: auto`, and Tailwind's preflight zeroes that margin — without
-it the dialog pins to the top-left corner. Section 23 of the e2e asserts the
+it the dialog pins to the top-left corner. Section 26 of the e2e asserts the
 placement, because this is invisible to every other kind of check.
+
+**Below 1024px the editor shows a wall, not a smaller editor.** Cutting means
+catching a 2px trim handle on a timeline measured in pixels per second; that
+layout does not shrink gracefully, and a phone-sized version would be a worse
+promise than an honest one. `DesktopOnly` states the window's own width
+against the width needed, in the mono face the app uses for every other
+measurement. `MIN_WIDTH` is Tailwind's `lg`, not `md`: everything still fits
+at 768, but only just, and the e2e's narrowest measurements now run at the
+floor the product actually claims. Gate on a width measured after mount, never during render — the
+server has no window and a tree that differs between the two is a hydration
+error.
 
 **No Unicode glyphs as icons.** A `⌫` in a keycap is not an icon system; use
 `BackspaceIcon` from the lucide wrappers like everything else.
@@ -198,6 +249,13 @@ wide clip gets more bars instead of fatter ones — which is what keeps a full
 round cap reading as softened rather than as a row of lozenges. The count comes
 from a `ResizeObserver` on the track.
 
+Bars cover the **visible slice at full density**, not the whole clip at a
+capped count. Magnified, a clip is tens of thousands of pixels wide; capping
+the count stretched every bar into a 50px block and left the part actually on
+screen with a dozen of them. The window is quantised to `BAR_WINDOW`, so
+scrolling redraws them every 400px rather than every frame, and the bar width
+is a real pixel value so the pitch is the same at 1× and 32×.
+
 Envelopes are normalised **per source file** against that file's own peak, and
 drawn symmetric about the clip's centre line. Scaling by absolute amplitude
 draws a normally recorded voice — which peaks around 0.18, nowhere near full
@@ -215,7 +273,26 @@ Ruler tick spacing is chosen from the **pixels available**, not from the
 duration: the smallest interval in `TICK_STEPS` that leaves `MIN_TICK_PX`
 between labels. Picking by duration alone meant slowing a clip stretched the
 timeline without widening the ruler, so the same interval produced twice as
-many labels and they overlapped by 3.4px on a narrow window.
+many labels and they overlapped by 3.4px on a narrow window. `MIN_TICK_PX` has
+to cover **one and a half labels**, not one: the first label is left-aligned
+rather than centred, so it spends half a label of the opening gap on itself.
+At 68 that gap closed to 2.7px once a held extent changed the pitch.
+
+The ruler and every lane live in **one horizontal scroller**, with the label
+column `sticky left-0` inside it rather than as a second element scrolled in
+sympathy — two scrollers drift by a pixel and the drift shows on a hairline.
+Freeze it with `self-stretch`, never `h-full`: a percentage height against an
+auto-height flex row collapses to the label's own 20px, which looked fine
+until a lane started sliding underneath it. Magnification is expressed as how
+many viewport widths the timeline spans (`SCALE_STEPS`), so 1× always means
+"the whole edit at once" whatever the window or the footage.
+
+**Draw the scroll position; the platform will not.** macOS overlay scrollbars
+occupy no layout — measured here as `offsetHeight - clientHeight === 0` — and
+vanish at rest, so a timeline three screens wide looked like one screen that
+stopped. The bar under the lanes is the width of the visible slice and drags
+to move the view. A label sliding under the frozen column is hidden rather
+than clipped: "0:05.00" cut at its centre reads as ".00".
 
 ### Contrast
 
@@ -245,8 +322,8 @@ missing. Errors say what went wrong and how to fix it.
 ## Verification
 
 ```bash
-bun test                    # 110 unit tests: edit algebra, effects, trim, undo, DSP, agent tools
-bun test/e2e/verify.mjs     # 92 checks in real Chrome — records its own test clip
+bun test                    # 121 unit tests: edit algebra, effects, trim, undo, DSP, agent tools
+bun test/e2e/verify.mjs     # 119 checks in real Chrome — records its own test clip
 bun test/e2e/shots.mjs      # screenshots both screens for design review
 ```
 
@@ -262,6 +339,13 @@ Section 12 of the e2e guards the defects a screenshot catches only by luck: a
 control that draws nothing, an icon-only control with no accessible name, a
 text button whose computed corner radius is 0, and an icon under 3:1 against
 its own button fill.
+
+Section 24 covers the view model: that a trim leaves an untouched clip exactly
+where it was (the witness for "the timeline did not rescale"), that the room a
+trim opens can be trimmed back into, that magnification makes the track
+scrollable and the position bar moves it, that the frozen label column stays
+opaque over a scrolled lane, that ruler labels keep 6px of air at **every**
+scale step, and that a narrow window gets the wall instead of a broken editor.
 
 Section 13 measures the waveform's shape, not just its presence: peak height as
 a fraction of the clip, median dynamic range, and that silence reads flat.
@@ -295,6 +379,12 @@ full-page one. The grey play triangle was invisible at page scale.
 constant full-level tone, which flattered two bugs into looking fine — the
 waveform smudge survived three design passes because a constant tone happens to
 render acceptably even when the scaling is wrong.
+
+**Do not assume the ruler maps 0 to the duration.** It holds its extent after
+a trim, so its right-hand end can be past the last frame — where a canvas
+sample finds nothing to measure. Seek relative to the material (`[data-clip]`
+boxes), not to a fraction of the ruler. One check spent a run reporting a
+missing reference marker for exactly this reason.
 
 ## Not built yet
 

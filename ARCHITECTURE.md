@@ -268,6 +268,21 @@ they are averaged (`decodeAudio()`).
 **RMS.** Root mean square over a window — the standard measure of *perceived*
 loudness across a span, as opposed to a single peak.
 
+**Loudness curve.** RMS in dBFS at a fixed hop (10ms here), one number per
+hop. It is what silence detection actually reads; the samples themselves are
+never needed once it exists, which is what makes streaming analysis possible.
+
+**Streaming analysis.** Decoding a track chunk by chunk and folding each chunk
+into fixed-size results — here a loudness curve and a peak envelope — instead
+of holding the decoded audio. An hour of 48kHz stereo is 1.4GB decoded and
+about 4MB as a curve. `summariseAudio()`.
+
+**Track offset.** The point in the container where an audio track's first
+sample sits. It is rarely zero — a screen or camera capture typically starts
+its audio a fraction of a second in — and it matters because every cut is
+expressed in container seconds. Hops before that offset hold no samples, read
+−180 dBFS, and turn the head of the file into a phantom pause.
+
 **dBFS.** Decibels relative to full scale: a logarithmic scale where 0 dBFS is
 the loudest representable signal and everything real is negative. Speech
 typically peaks around −15 dBFS. Logarithmic because hearing is.
@@ -343,7 +358,14 @@ export. It replaced `mp4-muxer`, which its own author deprecated in its favour.
 **OPFS — Origin Private File System.** A real filesystem the browser grants a
 site, private to that origin and invisible in the user's file manager. Media is
 written here on import: nothing uploads, import is instant regardless of size,
-and a 4 GB source costs nothing to host. `src/lib/media/opfs.ts`.
+and a multi-gigabyte source costs nothing to host. `src/lib/media/opfs.ts`.
+
+**Quota and persistence.** Storage is capped per origin and the browser
+decides the number — typically a share of free disk. `navigator.storage
+.estimate()` reports it, which is how an import that cannot fit is refused in
+a second rather than failing halfway through. `navigator.storage.persist()`
+asks the browser not to evict the origin under pressure; it may say no, and
+the footage is written either way.
 
 **IndexedDB.** The browser's structured database. Holds project metadata — the
 commit history, media info, waveforms. `src/lib/db.ts`.
@@ -405,7 +427,30 @@ step forward, go to end. Named after the tape transport mechanism.
 label count without widening the ruler and the labels collide.
 
 **Gutter.** The fixed-width label column at the left of every lane, so all lanes
-share one time origin.
+share one time origin. It is `sticky` inside the timeline's scroller rather
+than a separate column beside it, so it stays put while time scrolls past.
+
+**Reorder, versus move.** On a track with free positions, dragging a clip
+*moves* it and can leave a gap. Here it *reorders*: the clip changes places
+with its neighbours and the track stays gap-free, because no clip stores a
+position to move it to. `dropSlot()` answers which slot; `moveClip()` performs
+the change.
+
+**Span, versus duration.** The **duration** is how long the edit is; the
+**span** is how much time the ruler is drawn across. They are usually equal.
+They part company after a trim: the span holds at the longest the edit has
+been, so the shortened clip keeps its scale and there is empty timeline to
+drag its handle back out into. `Fit` reframes the span to the duration.
+
+**Magnification.** How many viewport widths the timeline is drawn across —
+1× is the whole edit at once, 8× spreads it over eight screens for frame-level
+trimming. Expressed this way rather than in pixels per second so the number
+means the same thing on any window and any footage.
+
+**Position bar.** The slim bar under the lanes showing which slice of the
+timeline is on screen. It exists because overlay scrollbars — the macOS
+default — take no layout space and disappear at rest, leaving a zoomed
+timeline with no sign that it continues.
 
 **Inspector.** The contextual panel of controls for whatever is selected.
 Always present, showing a hint when nothing is — letting it appear and
@@ -428,16 +473,22 @@ Everything here runs locally. The video never leaves the machine.
 
 ```mermaid
 flowchart TD
-  A[User drops a file] --> B[probeVideo: demux with Mediabunny]
+  A[User drops a file] --> A1{checkRoom: fits the origin's quota?}
+  A1 -- no --> A2[Refused, with the size and the room left]
+  A1 -- yes --> B[probeVideo: demux with Mediabunny]
   B --> B1[displayWidth / displayHeight, rotation-corrected]
   B --> B2[computePacketStats: real frame rate]
   B --> B3{has an audio track?}
   B1 --> C[emptyEdl at the file's real fps and size]
   B2 --> C
-  A --> D[putMedia: write bytes to OPFS]
-  B3 -- yes --> E[decodeAudio: AudioContext to mono PCM]
-  E --> F[detectSilences: raw, unpadded, adaptive threshold]
-  E --> G[waveform: 1600 peak buckets]
+  A1 -- yes --> D[putMedia: stream bytes to OPFS]
+  B3 -- yes --> E[summariseAudio: decode chunk by chunk]
+  E --> E1[fold into a 10ms loudness curve]
+  E --> E2[fold into 1600 peak buckets]
+  E1 --> F[silencesFromLoudness: raw, unpadded, adaptive threshold]
+  E2 --> G[waveform for the timeline]
+  E -. codec WebCodecs refuses .-> E3[decodeAudio: whole track at once]
+  E3 --> F
   B3 -- no --> H[skip analysis]
   C --> I[insertClip: one clip spanning the file]
   I --> J[initRepo: first commit, Import file.mp4]
@@ -591,3 +642,23 @@ Each of these was a real bug here, not a hypothetical.
 9. **Assuming an effect renders because its UI exists.** Sample canvas pixels —
    and sample off-centre, because synthetic test clips often draw something
    white dead centre.
+10. **Decoding a whole audio track to analyse it.** `decodeAudioData` needs the
+    entire file as an `ArrayBuffer` and expands it to Float32 at the source
+    rate: an hour of 48kHz stereo is 1.4GB before the mono downmix, and the
+    import dies with nothing but an out-of-memory in the console. Stream it and
+    keep only the curve.
+11. **Assuming an audio track starts at zero.** It usually does not. Place the
+    curve at the track's own offset, or every cut lands early by that much and
+    the head of the file reads as a pause that is not there.
+12. **`h-full` on a flex item.** A percentage height against an auto-height row
+    collapses to the content's own height. The frozen label column looked
+    correct for weeks and was 20px tall over an 80px lane — invisible until
+    something scrolled underneath it.
+13. **Trusting the platform to draw a scrollbar.** macOS overlay scrollbars
+    occupy no layout and vanish at rest, so an element that scrolls can look
+    like an element that simply stops.
+14. **Re-registering a global key listener on every edit.** Removing a listener
+    while the event is still being dispatched means it is never called. Two
+    components both listening on `window`, the first one changing state, and
+    the second one's shortcut is dead — silently, and only for the keys the
+    first component also handles.
