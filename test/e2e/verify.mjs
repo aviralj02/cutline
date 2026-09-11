@@ -1,6 +1,8 @@
 import { chromium } from "playwright-core";
 
 const OUT = process.env.SHOT_DIR ?? "/tmp";
+/** The narrowest window the editor claims to work at. Must match MIN_WIDTH. */
+const FLOOR = 860;
 const log = (...a) => console.log(...a);
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -399,9 +401,9 @@ log("\n14. Ruler labels never collide, at any speed");
   check("labels stay clear at 2x", (await overlaps()) === 0);
 
   // Narrow windows are where labels actually collide: the ruler loses width
-  // while the number of ticks stays the same. 1024 is the narrowest the
+  // while the number of ticks stays the same. FLOOR is the narrowest the
   // editor claims to work at — below it the window gets a wall instead.
-  await page.setViewportSize({ width: 1024, height: 720 });
+  await page.setViewportSize({ width: FLOOR, height: 720 });
   await page.waitForTimeout(600);
   check("labels are clear on a narrow window", (await overlaps()) === 0);
 
@@ -686,6 +688,32 @@ log("\n19. The zoom anchors exactly on its marker");
 }
 
 // ---------------------------------------------------------------------------
+log("\n19b. Backspace deletes a selected effect, the way it deletes a clip");
+{
+  const effects = () => page.locator("[data-effect]").count();
+  const lanes = () => page.getByRole("button", { name: /^Remove .* track$/ }).count();
+  const n0 = await effects();
+  const l0 = await lanes();
+
+  await page.locator("[data-effect]").last().click();
+  await page.waitForTimeout(300);
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(400);
+
+  check("the selected effect is gone", (await effects()) === n0 - 1, `${n0} to ${await effects()}`);
+  check("its lane stays", (await lanes()) === l0, `${l0} to ${await lanes()}`);
+  check("the inspector lets go of it",
+        await page.getByText("Select a fade or zoom to adjust it").isVisible());
+  check("it is one version, named for what it did",
+        (await page.getByText("Remove zoom", { exact: true }).count()) === 1);
+
+  // Later sections were written against the zoom still being here.
+  await page.keyboard.press("Control+z");
+  await page.waitForTimeout(400);
+  check("and undo brings it back", (await effects()) === n0);
+}
+
+// ---------------------------------------------------------------------------
 log("\n20. Trimming a clip by dragging its edge");
 {
   const total = () =>
@@ -849,9 +877,77 @@ log("\n23. The transport never swallows a toolbar click");
     });
   };
 
-  for (const w of [1680, 1440, 1280, 1100, 1024]) {
+  // Covered is not the only way to lose a control: squeezed, it is clipped by
+  // the card around it or wraps out of its row. Measured with a clip selected,
+  // which is when the toolbar is at its widest.
+  const spillAt = () =>
+    page.evaluate(() => {
+      const heading = (text, scope = document) =>
+        [...scope.querySelectorAll("h2")].find((h) => h.textContent === text);
+      const rows = {
+        "app header": document.querySelector("header"),
+        "timeline card": heading("Timeline")?.parentElement?.parentElement,
+        "Ask header": heading("Ask")?.parentElement,
+        "Versions header": heading("Versions")?.parentElement,
+      };
+      const out = {};
+      for (const [name, row] of Object.entries(rows)) {
+        if (!row) {
+          out[name] = "missing";
+          continue;
+        }
+        const r = row.getBoundingClientRect();
+        let spill = 0;
+        for (const el of row.querySelectorAll("button, h2, label, span")) {
+          // The lanes scroll sideways on purpose; only the chrome must fit.
+          if (el.closest(".overflow-x-auto")) continue;
+          const b = el.getBoundingClientRect();
+          if (!b.width || !b.height) continue;
+          spill = Math.max(spill, b.right - r.right, r.left - b.left, b.bottom - r.bottom, r.top - b.top);
+        }
+        out[name] = Math.round(spill);
+      }
+      out.page = document.documentElement.scrollWidth - window.innerWidth;
+      return out;
+    });
+
+  // Fitting is not the same as having room. The toolbar is the tightest row:
+  // this is the space left between its label and its controls.
+  const toolbarSlack = () =>
+    page.evaluate(() => {
+      const row = [...document.querySelectorAll("h2")].find((h) => h.textContent === "Timeline")?.parentElement;
+      const count = row?.querySelector(":scope > span");
+      const controls = row?.querySelector(":scope > div");
+      if (!count || !controls) return -1;
+      return Math.round(controls.getBoundingClientRect().left - count.getBoundingClientRect().right);
+    });
+
+  // Prove the measure can fail: push a control out of the toolbar on purpose.
+  await page.locator("[data-clip]").first().click({ force: true });
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("h2")].find((h) => h.textContent === "Timeline")?.parentElement;
+    const probe = document.createElement("button");
+    probe.id = "spill-probe";
+    probe.style.cssText = "flex-shrink:0;width:3000px;height:20px";
+    row?.querySelector(":scope > div")?.append(probe);
+  });
+  const probed = await spillAt();
+  await page.evaluate(() => document.getElementById("spill-probe")?.remove());
+  check("the spill measure catches a control pushed out of its row",
+        typeof probed["timeline card"] === "number" && probed["timeline card"] > 1,
+        `${probed["timeline card"]}px`);
+
+  for (const w of [1680, 1440, 1280, 1100, 1024, 920, 900, 880, 860].filter((w) => w >= FLOOR)) {
     const n = await stolenAt(w);
     check(`no clicks stolen at ${w}px`, n === 0, n < 0 ? "transport not found" : `${n} stolen`);
+    const spill = await spillAt();
+    const worst = Object.entries(spill).filter(([, v]) => v === "missing" || v > 1);
+    check(`nothing spills out of its row at ${w}px`, worst.length === 0,
+          worst.length
+            ? worst.map(([k, v]) => `${k} ${v === "missing" ? v : `${v}px`}`).join(", ")
+            : `toolbar has ${await toolbarSlack()}px to spare`);
+    if (w === FLOOR) await page.screenshot({ path: `${OUT}/floor-${FLOOR}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(400);
@@ -977,15 +1073,15 @@ log("\n24. The timeline holds its room, scrolls, and refuses a narrow window");
 
   // The floor is a claim about where the editor works, so check both sides of
   // it rather than only somewhere obviously too small.
-  await page.setViewportSize({ width: 1000, height: 860 });
+  await page.setViewportSize({ width: FLOOR - 24, height: 860 });
   await page.waitForTimeout(500);
   check("just under the floor still gets the wall",
         (await page.locator("[data-clip]").count()) === 0,
-        "1000px");
-  await page.setViewportSize({ width: 1024, height: 860 });
+        `${FLOOR - 24}px`);
+  await page.setViewportSize({ width: FLOOR, height: 860 });
   await page.waitForTimeout(500);
   check("the floor itself gets the editor",
-        (await page.locator("[data-clip]").count()) > 0, "1024px");
+        (await page.locator("[data-clip]").count()) > 0, `${FLOOR}px`);
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(500);
@@ -1068,6 +1164,180 @@ log("\n25. Split pieces can be put back in a different order");
 }
 
 // ---------------------------------------------------------------------------
+log("\n25b. Emptying the track and bringing it back keeps the timeline's width");
+{
+  /**
+   * An empty track swaps the scroller for a placeholder, so the element the
+   * width is measured on unmounts. Measured once on mount, the width then read
+   * as 0 forever, and the footage came back drawn 120px wide.
+   */
+  const clips = () => page.locator("[data-clip]").count();
+  const rulerW = async () =>
+    (await page.getByRole("slider", { name: "Playhead" }).boundingBox())?.width ?? 0;
+  const emptyTrack = async () => {
+    for (let guard = 20; (await clips()) > 0 && guard > 0; guard--) {
+      await page.locator("[data-clip]").first().click();
+      await page.waitForTimeout(200);
+      await page.keyboard.press("Backspace");
+      await page.waitForTimeout(300);
+    }
+  };
+
+  const n = await clips();
+  const w0 = await rulerW();
+
+  await emptyTrack();
+  check("deleting every clip empties the track",
+        (await clips()) === 0 && (await page.getByText("Nothing on the timeline").isVisible()));
+
+  for (let i = 0; i < n; i++) {
+    await page.keyboard.press("Control+z");
+    await page.waitForTimeout(250);
+  }
+  await page.waitForTimeout(300);
+  check("undo brings every clip back", (await clips()) === n, `${n} to ${await clips()}`);
+  const w1 = await rulerW();
+  check("and the timeline comes back at its full width", Math.abs(w1 - w0) < 2,
+        `${Math.round(w0)}px before, ${Math.round(w1)}px after`);
+
+  // Restore brings the footage back by a different door, through the same
+  // remount. The head has no Restore button, so after n deletions the version
+  // from before them is button n - 1.
+  await emptyTrack();
+  await page.getByRole("button", { name: "Restore" }).nth(n - 1).click();
+  await page.waitForTimeout(500);
+  check("restore brings every clip back", (await clips()) === n, `${n} to ${await clips()}`);
+  const w2 = await rulerW();
+  check("and so does the timeline's width", Math.abs(w2 - w0) < 2,
+        `${Math.round(w0)}px before, ${Math.round(w2)}px after`);
+}
+
+// ---------------------------------------------------------------------------
+log("\n25c. Nothing on the timeline highlights as text");
+{
+  const selected = () => page.evaluate(() => window.getSelection()?.toString().trim() ?? "");
+  const clear = () => page.evaluate(() => window.getSelection()?.removeAllRanges());
+
+  // A drag that starts on a label and sweeps across the lanes is how text
+  // gets painted blue by accident in the middle of an edit.
+  await clear();
+  const heading = await page.getByRole("heading", { name: "Timeline" }).boundingBox();
+  const lastClip = await page.locator("[data-clip]").last().boundingBox();
+  await page.mouse.move(heading.x + 2, heading.y + heading.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(lastClip.x + lastClip.width - 4, lastClip.y + lastClip.height + 60, { steps: 12 });
+  await page.mouse.up();
+  const swept = await selected();
+  check("a drag across the timeline selects no text", swept === "", `selected "${swept.slice(0, 40)}"`);
+
+  await clear();
+  await page.getByText("Video", { exact: true }).first().dblclick();
+  const lane = await selected();
+  check("double-clicking a lane name selects nothing", lane === "", `selected "${lane}"`);
+
+  // The transport floats over the timeline card, so it counts as part of it.
+  await clear();
+  await page.getByText(/^\d+:\d\d\.\d\d$/).first().dblclick();
+  const tc = await selected();
+  check("double-clicking the timecode selects nothing", tc === "", `selected "${tc}"`);
+  await clear();
+}
+
+// ---------------------------------------------------------------------------
+log("\n25d. A variant can be deleted, after saying what goes with it");
+{
+  const clips = () => page.locator("[data-clip]").count();
+  const deleteButton = () => page.getByRole("button", { name: "Delete this variant" });
+  const dialogOpen = () => page.evaluate(() => !!document.querySelector("dialog[open]"));
+  // Long on purpose: the name sits in the header chip beside every control.
+  const NAME = "short cut for the vertical reel";
+  const current = () =>
+    page.locator("aside").getByText(new RegExp(`^(main|${NAME})$`)).first().innerText();
+
+  check("there is nothing to delete with only one variant", (await deleteButton().count()) === 0);
+
+  const n0 = await clips();
+  await page.getByRole("button", { name: "Variant", exact: true }).click();
+  await page.getByPlaceholder("Name this variant").fill(NAME);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  // One version that exists only on the variant.
+  await page.locator("[data-clip]").first().click();
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(400);
+  check("the variant has its own edit", (await clips()) === n0 - 1, `${n0} to ${await clips()}`);
+
+  // For design review: this puts a fourth control in the rail's header, and
+  // below xl the rail is 290px. Measured there, at the narrow end.
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await page.waitForTimeout(400);
+  const rail = await page.locator("aside").boundingBox();
+  const header = await page.getByRole("button", { name: "Variant", exact: true }).boundingBox();
+  await page.screenshot({
+    path: `${OUT}/variant-header.png`,
+    clip: { x: rail.x, y: header.y - 12, width: rail.width, height: 110 },
+  });
+  const del = await deleteButton().boundingBox();
+  check("the delete control fits inside the rail",
+        del.x >= rail.x && del.x + del.width <= rail.x + rail.width,
+        `${Math.round(del.x + del.width - (rail.x + rail.width))}px past the edge`);
+  const variantBtn = await page.getByRole("button", { name: "Variant", exact: true }).boundingBox();
+  check("and so does the Variant button beside it",
+        variantBtn.x >= rail.x && variantBtn.x + variantBtn.width <= del.x,
+        `${Math.round(variantBtn.x - rail.x)}px from the rail's edge`);
+  // The buttons can fit while the name does not: squeezed, the chip wrapped
+  // to three lines and spilled out of the header over the list below.
+  const chip = await page.evaluate((name) => {
+    const header = [...document.querySelectorAll("aside h2")]
+      .find((e) => e.textContent === "Versions")?.parentElement;
+    const el = [...(header?.querySelectorAll("span") ?? [])].find((s) => s.textContent === name);
+    if (!header || !el) return null;
+    const h = header.getBoundingClientRect();
+    const c = el.getBoundingClientRect();
+    return {
+      height: c.height,
+      inside: c.top >= h.top && c.bottom <= h.bottom && c.left >= h.left && c.right <= h.right,
+    };
+  }, NAME);
+  check("the variant's name stays on one line, inside the header",
+        !!chip && chip.height < 26 && chip.inside,
+        chip ? `${Math.round(chip.height)}px tall, ${chip.inside ? "inside" : "spilling out"}` : "chip not found");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(400);
+
+  await deleteButton().click();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${OUT}/variant-dialog.png` });
+  check("deleting asks first", await dialogOpen());
+  const says = await page.evaluate(() => document.querySelector("dialog[open]")?.innerText.replace(/\n/g, " ") ?? "");
+  check("and names the variant and what goes with it",
+        says.includes(NAME) && /1 version/.test(says), says.slice(0, 120));
+  const focused = await page.evaluate(() => document.activeElement?.textContent?.trim());
+  check("focus starts on the safe choice", focused === "Keep it", `focused: ${focused}`);
+  const labelled = await page.evaluate(() => {
+    const d = document.querySelector("dialog[open]");
+    return document.getElementById(d?.getAttribute("aria-labelledby") ?? "")?.closest("dialog") === d;
+  });
+  check("the dialog is named by its own title, not another dialog's", labelled);
+
+  await page.getByRole("button", { name: "Keep it" }).click();
+  await page.waitForTimeout(300);
+  check("Keep it leaves the variant alone",
+        !(await dialogOpen()) && (await deleteButton().count()) === 1 && (await clips()) === n0 - 1);
+
+  await deleteButton().click();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "Delete variant" }).click();
+  await page.waitForTimeout(500);
+  check("confirming deletes it and returns to main",
+        !(await dialogOpen()) && (await current()) === "main", `on ${await current()}`);
+  check("main's edit is on screen", (await clips()) === n0, `${await clips()} clips`);
+  check("and with one variant left there is nothing more to delete",
+        (await deleteButton().count()) === 0);
+}
+
+// ---------------------------------------------------------------------------
 log("\n26. New project asks before destroying the work");
 {
   const editorOpen = () => page.evaluate(() => document.body.innerText.includes("Timeline"));
@@ -1109,6 +1379,21 @@ log("\n26. New project asks before destroying the work");
   await page.waitForTimeout(400);
   check("Keep editing cancels", !(await dialogOpen()) && (await editorOpen()));
 
+  // The footage lives in OPFS, not in the project record, so clearing the
+  // record alone leaves every imported file behind, eating the quota.
+  const storedFiles = () => page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    try {
+      const dir = await root.getDirectoryHandle("media");
+      let n = 0;
+      for await (const _ of dir.keys()) n++;
+      return n;
+    } catch {
+      return 0;
+    }
+  });
+  const before = await storedFiles();
+
   await page.getByRole("button", { name: /New project/ }).click();
   await page.waitForTimeout(300);
   await page.getByRole("button", { name: "Delete and start over" }).click();
@@ -1116,6 +1401,9 @@ log("\n26. New project asks before destroying the work");
   check("confirming clears the project", !(await editorOpen()));
   check("and returns to the import screen",
         await page.getByText(/Drop a video/).isVisible());
+  const after = await storedFiles();
+  check("and deletes the imported footage from disk", before > 0 && after === 0,
+        `${before} file(s) stored before, ${after} after`);
 }
 
 log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
