@@ -88,9 +88,24 @@ export async function getMedia(id: string): Promise<File | null> {
 
 export async function deleteMedia(id: string): Promise<void> {
   try {
-    (await dir()).removeEntry(id);
+    await (await dir()).removeEntry(id);
   } catch {
     /* already gone */
+  }
+}
+
+/**
+ * Delete every stored file, not just the ones the current project knows
+ * about. Removing the whole directory also sweeps footage left behind by
+ * resets from before this cleaned up after itself.
+ */
+export async function clearMedia(): Promise<void> {
+  releaseUrls();
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(DIR, { recursive: true });
+  } catch {
+    /* nothing stored yet */
   }
 }
 

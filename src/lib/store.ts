@@ -13,7 +13,7 @@ import {
   decodeAudio, detectSilences, probeVideo, silencesFromLoudness, summariseAudio, waveform,
   type Probe,
 } from "./media/analyze";
-import { checkRoom, keepStorage, putMedia } from "./media/opfs";
+import { checkRoom, clearMedia, keepStorage, putMedia } from "./media/opfs";
 import { loadProject, saveProject, clearProject } from "./db";
 
 export interface ChatEntry {
@@ -67,6 +67,8 @@ interface State {
   restore: (commitId: string) => void;
   branch: (name: string) => void;
   switchBranch: (name: string) => void;
+  /** Not undoable — the one caller confirms first. */
+  deleteBranch: (name: string) => void;
   ask: (prompt: string) => Promise<void>;
   setPlayhead: (t: number, fromPlayback?: boolean) => void;
   setPlaying: (p: boolean) => void;
@@ -337,6 +339,24 @@ export const useStore = create<State>((set, get) => ({
     persist(get());
   },
 
+  deleteBranch(name) {
+    const repo = get().repo;
+    if (!repo) return;
+    const next = vcs.deleteBranch(repo, name);
+    if (next === repo) return;
+    // Deleting the variant you are on lands you on another. The redo stack,
+    // the draft and the selection all belonged to the one that is gone.
+    const moved = next.current !== repo.current;
+    set({
+      repo: next,
+      ...(moved && {
+        playing: false, playhead: 0, draft: null, redoStack: [],
+        selectedClip: null, selectedEffect: null,
+      }),
+    });
+    persist(get());
+  },
+
   async ask(prompt) {
     const { repo, media, analysis } = get();
     if (!repo || !prompt.trim()) return;
@@ -457,7 +477,13 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async reset() {
-    await clearProject().catch(() => {});
+    // The preview stays mounted, reading the files, until the state below
+    // clears — so playback stops before they go.
+    set({ playing: false });
+    // The record and the footage live in two stores. Clearing only the
+    // record left every imported file in OPFS, eating the quota a little
+    // more with each new project.
+    await Promise.all([clearProject().catch(() => {}), clearMedia()]);
     set({
       repo: null, media: [], analysis: { silences: {} }, waveforms: {},
       chat: [], playhead: 0, playing: false, selectedClip: null, selectedEffect: null,

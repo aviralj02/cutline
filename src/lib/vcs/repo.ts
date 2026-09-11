@@ -110,11 +110,53 @@ export function branch(r: Repo, name: string): Repo {
 export const switchBranch = (r: Repo, name: string): Repo =>
   r.branches[name] ? { ...r, current: name } : r;
 
+/** Every commit reachable from the given heads, following parents. */
+function reachable(r: Repo, heads: string[]): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...heads];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id) || !r.commits[id]) continue;
+    seen.add(id);
+    const parent = r.commits[id].parent;
+    if (parent) stack.push(parent);
+  }
+  return seen;
+}
+
+/** The versions only this variant reaches: exactly what deleting it loses. */
+function exclusiveTo(r: Repo, name: string): Set<string> {
+  const others = reachable(
+    r,
+    Object.entries(r.branches).filter(([n]) => n !== name).map(([, id]) => id),
+  );
+  return new Set([...reachable(r, [r.branches[name]])].filter((id) => !others.has(id)));
+}
+
+/** How many versions deleting a variant would take with it. */
+export const onlyOn = (r: Repo, name: string): number =>
+  r.branches[name] ? exclusiveTo(r, name).size : 0;
+
+/**
+ * Delete a variant **and the versions only it reached**. Dropping the name
+ * alone would strand them, stored and persisted forever with nothing that can
+ * reach them. History shared with another variant stays.
+ *
+ * Unlike every edit, this is not undoable — it is not a commit, so there is
+ * nothing for undo to step back over — which is why the UI confirms it.
+ * Deleting the variant you are on moves you to main, or to whatever remains;
+ * the last variant cannot go.
+ */
 export function deleteBranch(r: Repo, name: string): Repo {
-  if (name === r.current || Object.keys(r.branches).length < 2) return r;
+  if (!r.branches[name] || Object.keys(r.branches).length < 2) return r;
+  const gone = exclusiveTo(r, name);
   const branches = { ...r.branches };
   delete branches[name];
-  return { ...r, branches };
+  const commits = { ...r.commits };
+  for (const id of gone) delete commits[id];
+  const current =
+    name !== r.current ? r.current : branches.main ? "main" : Object.keys(branches)[0];
+  return { commits, branches, current };
 }
 
 export interface Diff {
