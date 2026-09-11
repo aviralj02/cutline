@@ -76,6 +76,8 @@ snaps every time to a frame boundary, so identical edits produce identical JSON.
 | Delete a clip or a span | `deleteClip`, `rippleDelete` | Clip windows shrink; everything after slides left |
 | Drag a clip's edge | `trimClipEdge` | That clip's `in` or `out`; a slug takes the freed space, so nothing else moves |
 | Close a gap | `deleteClip` on the slug | The slug goes; everything after slides left |
+| Add a sound | `addSound` | An item on the sound lane: its file, where it starts, how far into the file |
+| Mute the original audio | `setVideoMuted` | `videoMuted`; sound lanes still play |
 | Drag a clip to a new slot | `moveClip` | Its position in the `clips` array |
 | Change speed | `setSpeed` | `speed`; a 2× clip takes half the timeline |
 | Crop to 9:16 | `setCropAspect` | `crop` |
@@ -122,6 +124,10 @@ canvas, in a fixed order:
   seek.**
 - **A gap plays as black.** It has no video to keep time, so the frame loop's
   own clock carries the playhead across it; titles and fades still draw.
+- **Sound follows the playhead.** Each sound item has its own `<audio>`
+  element. The frame loop plays it while the playhead is inside it, stops it
+  outside, and re-seeks it only when it drifts more than 0.25s. The video's own
+  sound follows `videoMuted`.
 - **Effects are arithmetic, not stored frames.** `zoomAt` eases the scale over
   `ramp` seconds with smoothstep; `fadeAt` turns "how far through the fade" into
   an opacity.
@@ -218,6 +224,10 @@ your request
   starting model (`claude-opus-5` on Anthropic).
 - **Anthropic requests** send adaptive thinking and effort only to models that
   support them, and turn on refusal fallbacks for the top models.
+- **Loose requests work.** Every manual action has a tool. The description of
+  the edit includes the playhead, the selection and the last change, so
+  "split here", "delete this" and "undo" each mean something, and clips carry
+  the numbers shown on screen.
 
 ## 8. Storage
 
@@ -274,6 +284,11 @@ src/components/ui/    design primitives: compose these, don't restyle
 - **Trim:** move one edge of a clip or effect. Nothing else moves; a slug fills
   any space the trim frees.
 - **Slug:** blank leader. How a gap is stored on the track: a clip with no file.
+- **Sound lane:** music or other audio files under the picture. Each item is a
+  window onto its file: where it starts on the timeline (`at`), how long it
+  plays (`dur`) and from how far into the file (`in`).
+- **Original audio:** the sound recorded with the video. It can be muted for
+  the whole edit without touching the sound lane.
 - **Playhead:** the current position. **Scrub:** drag it, on the ruler only.
 - **Lane:** a row for one kind of effect, below the video.
 - **Fade:** a wash to or from a colour. In, out, or a **dip** through it and back.

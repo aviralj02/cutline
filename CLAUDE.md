@@ -84,6 +84,14 @@ on the list has had its browser access checked, and an arbitrary URL cannot be.
 - **Every failure is one of a dozen kinds** (`Failure`), each with a title and
   a fix in the provider's own name. Classify by status *and* message: Google
   answers a bad key with a 400, OpenAI an empty account with a 429.
+- **Built for loose requests.** Every manual action has a tool, and nothing
+  the agent can do is out of reach by hand. The model is told the playhead,
+  the selection and the last change, so "here", "this" and "undo" mean
+  something (`revert_last_change` restores the version before, as a new
+  version). Clips are listed with the numbers the user sees, and the system
+  prompt maps everyday phrasing onto tools. A vague request gets the most
+  reasonable edit plus one sentence naming the assumption, since every change
+  is a version.
 - **Test at the network edge.** Section 25e stands in for the providers with
   `page.route`, preflight included, so the SDK, CORS and storage all run on
   fake keys — and it checks that no key reaches any host but its own.
@@ -112,7 +120,15 @@ edge) covers every effect, and anything added later inherits it.
   frame corner. A filled disc reads as an *area* rather than a point, and a
   label hanging off it drags the eye off the true centre — which is what an
   apparent offset turns out to be, every time it has been reported.
-- Lanes are sorted fade-under-zoom, matching how they composite.
+- Lanes are sorted fade, zoom, then sound: the picture's lanes in the order
+  they composite, and sound below them.
+- **Sound is an interval too.** A sound item adds `src`, `in` (seconds into
+  its file) and `srcDur`. Trimming its head advances `in`, so the music under
+  the other edge stays put, and neither edge can run past the file. It plays
+  through one `<audio>` element per item, driven by the frame loop and
+  re-seeked only when it drifts more than 0.25s, so it never stutters.
+- **Muting the original audio is a document flag** (`videoMuted`, stored only
+  while on), so each toggle is a version you can undo. Sound lanes still play.
 
 ## Rules that are load-bearing
 
@@ -412,8 +428,8 @@ missing. Errors say what went wrong and how to fix it.
 ## Verification
 
 ```bash
-bun test                    # 171 unit tests: edit algebra, effects, trim and gaps, undo, variants, DSP, agent tools, BYOK
-bun test/e2e/verify.mjs     # 219 checks in real Chrome — records its own test clip
+bun test                    # 199 unit tests: edit algebra, effects, sound, trim and gaps, undo, variants, DSP, agent tools, BYOK
+bun test/e2e/verify.mjs     # 232 checks in real Chrome — records its own test clip
 bun test/e2e/shots.mjs      # screenshots both screens for design review
 ```
 

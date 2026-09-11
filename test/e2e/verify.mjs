@@ -703,7 +703,7 @@ log("\n19b. Backspace deletes a selected effect, the way it deletes a clip");
   check("the selected effect is gone", (await effects()) === n0 - 1, `${n0} to ${await effects()}`);
   check("its lane stays", (await lanes()) === l0, `${l0} to ${await lanes()}`);
   check("the inspector lets go of it",
-        await page.getByText("Select a fade or zoom to adjust it").isVisible());
+        await page.getByText("Select a fade, zoom or sound to adjust it").isVisible());
   check("it is one version, named for what it did",
         (await page.getByText("Remove zoom", { exact: true }).count()) === 1);
 
@@ -1556,6 +1556,9 @@ log("\n25e. Bring your own key: straight from this browser to the provider");
         first?.body.thinking?.type === "adaptive" && first?.body.output_config?.effort === "high" &&
         first?.body.fallbacks === "default" &&
         (first?.headers["anthropic-beta"] ?? "").includes("server-side-fallback-2026-07-01"));
+  const told = JSON.stringify(first?.body.messages.at(-1)?.content ?? "");
+  check("the model is told where the playhead is and what changed last",
+        told.includes("Playhead:") && told.includes("Last change:"));
   const echoed = second?.body.messages.at(-2)?.content ?? [];
   const results = second?.body.messages.at(-1)?.content ?? [];
   check("its thinking travels back verbatim, and the result answers the call by id",
@@ -1790,6 +1793,133 @@ log("\n25f. Ask and Versions fold, together or apart");
   await page.keyboard.press("Space");
   await page.waitForTimeout(250);
   await page.locator('aside form[aria-label="Connect a model"]').screenshot({ path: `${OUT}/checkbox-on.png` });
+}
+
+// ---------------------------------------------------------------------------
+log("\n25g. A sound lane, and the original audio muted");
+{
+  // Every media element that has been told to play, so playback can be checked on the real elements.
+  await page.evaluate(() => {
+    if (window.__media) return;
+    window.__media = new Set();
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      window.__media.add(this);
+      return play.call(this);
+    };
+  });
+  const audioPlaying = () =>
+    page.evaluate(() => [...window.__media].some((m) => m instanceof HTMLAudioElement && !m.paused));
+  const videos = () =>
+    page.evaluate(() => [...window.__media].filter((m) => m instanceof HTMLVideoElement && !m.paused).map((m) => m.muted));
+
+  // A real four-second tone, recorded in the page, so the file goes through the real import.
+  const tone = await page.evaluate(async () => {
+    const ac = new AudioContext();
+    const dest = ac.createMediaStreamDestination();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.frequency.value = 330;
+    gain.gain.value = 0.3;
+    osc.connect(gain).connect(dest);
+    osc.start();
+    const rec = new MediaRecorder(dest.stream, { mimeType: "audio/webm;codecs=opus" });
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.start();
+    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise((r) => {
+      rec.onstop = r;
+      rec.stop();
+    });
+    osc.stop();
+    await ac.close();
+    const bytes = new Uint8Array(await new Blob(chunks, { type: "audio/webm" }).arrayBuffer());
+    let s = "";
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  });
+
+  await page.keyboard.press("Home");
+  await page.locator('input[aria-label="Add a sound"]').setInputFiles({
+    name: "tone.webm", mimeType: "audio/webm", buffer: Buffer.from(tone, "base64"),
+  });
+  const item = page.locator("[data-sound]").first();
+  await item.waitFor({ timeout: 15000 }).catch(() => {});
+  check("adding a sound makes a Sound lane with the sound on it",
+        (await page.locator("[data-sound]").count()) === 1 && (await page.getByText("Sound", { exact: true }).first().isVisible()));
+  check("as one version, named for the file", (await page.getByText("Add sound tone.webm", { exact: true }).count()) === 1);
+  check("the new sound is selected, with its volume in the inspector",
+        await page.getByRole("slider", { name: /Volume/ }).first().isVisible().catch(() => false));
+  await page.locator("[data-sound]").first().locator("xpath=ancestor::div[contains(@class,'rounded-panel')][1]")
+    .screenshot({ path: `${OUT}/sound-lane.png` }).catch(() => {});
+
+  // --- drag the body to move it, and its head to trim into the file ---
+  const s0 = await item.boundingBox();
+  await page.mouse.move(s0.x + s0.width / 2, s0.y + s0.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(s0.x + s0.width / 2 + 60, s0.y + s0.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  const s1 = await item.boundingBox();
+  check("dragging the sound moves it", s1.x > s0.x + 40 && Math.abs(s1.width - s0.width) < 2,
+        `moved ${(s1.x - s0.x).toFixed(1)}px`);
+  check("as a version", (await page.getByText("Move sound", { exact: true }).count()) === 1);
+
+  await page.mouse.move(s1.x + 3, s1.y + s1.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(s1.x + 35, s1.y + s1.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  const s2 = await item.boundingBox();
+  check("trimming its head moves the start and keeps the end",
+        s2.x > s1.x + 20 && Math.abs(s2.x + s2.width - (s1.x + s1.width)) < 2,
+        `start moved ${(s2.x - s1.x).toFixed(1)}px, end moved ${(s2.x + s2.width - s1.x - s1.width).toFixed(1)}px`);
+
+  // --- it plays over the picture ---
+  const ruler = await page.getByRole("slider", { name: "Playhead" }).boundingBox();
+  await page.mouse.click(s2.x + Math.min(12, s2.width / 3), ruler.y + ruler.height / 2);
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(700);
+  const heard = await audioPlaying();
+  await page.getByRole("button", { name: "Pause", exact: true }).click().catch(() => {});
+  await page.waitForTimeout(300);
+  check("the sound plays when the playhead crosses it", heard);
+  check("and stops with the picture", !(await audioPlaying()));
+
+  // --- the original audio, muted and back ---
+  await page.getByRole("button", { name: "Mute original audio" }).click();
+  await page.waitForTimeout(300);
+  check("muting the original audio is a pressed toggle and a version",
+        (await page.getByRole("button", { name: "Unmute original audio" }).getAttribute("aria-pressed")) === "true" &&
+        (await page.getByText("Mute original audio", { exact: true }).count()) === 1);
+  const firstClip = await page.locator("[data-clip]").first().boundingBox();
+  await page.mouse.click(firstClip.x + 8, ruler.y + ruler.height / 2);
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(600);
+  const whileMuted = await videos();
+  await page.getByRole("button", { name: "Pause", exact: true }).click().catch(() => {});
+  await page.waitForTimeout(300);
+  check("while muted, the video plays silent", whileMuted.length > 0 && whileMuted.every(Boolean),
+        `${whileMuted.length} playing, muted: ${whileMuted.join(",")}`);
+
+  await page.getByRole("button", { name: "Unmute original audio" }).click();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(600);
+  const afterUnmute = await videos();
+  await page.getByRole("button", { name: "Pause", exact: true }).click().catch(() => {});
+  await page.waitForTimeout(300);
+  check("unmuting brings the video's sound back", afterUnmute.length > 0 && afterUnmute.every((m) => !m),
+        `muted: ${afterUnmute.join(",")}`);
+
+  // --- and it goes the way a fade does ---
+  await item.click();
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(400);
+  check("Backspace removes the selected sound and leaves its lane",
+        (await page.locator("[data-sound]").count()) === 0 && (await page.getByText("Sound", { exact: true }).first().isVisible()));
 }
 
 // ---------------------------------------------------------------------------

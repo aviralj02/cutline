@@ -95,8 +95,8 @@ the edit). `query.ts` owns the conversions.
 ## Tests
 
 ```bash
-bun test                    # 171 unit tests: edit algebra, silence DSP, agent tools, BYOK
-bun test/e2e/verify.mjs     # 219 checks in real Chrome — records its own test video
+bun test                    # 199 unit tests: edit algebra, sound, silence DSP, agent tools, BYOK
+bun test/e2e/verify.mjs     # 232 checks in real Chrome — records its own test video
 ```
 
 The e2e script generates a 20-second clip with two deliberate silent stretches using
