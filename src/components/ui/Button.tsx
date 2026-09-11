@@ -63,6 +63,7 @@ export function IconButton({
   variant = "quiet",
   active = false,
   round = false,
+  nested = false,
   className = "",
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -73,6 +74,8 @@ export function IconButton({
   active?: boolean;
   /** Transport controls are circular, the way every player's are. */
   round?: boolean;
+  /** Inside a field, 3px in: its 7px corner stays concentric with the field's 10px. */
+  nested?: boolean;
 }) {
   const tone =
     variant === "primary"
@@ -88,8 +91,9 @@ export function IconButton({
       type="button"
       aria-label={label}
       title={label}
-      className={`grid h-8 w-8 shrink-0 place-items-center transition-[background-color,color,transform] duration-150 active:scale-[.94] ${
-        round ? "rounded-full" : "rounded-ctl"
+      // Disabled must look disabled, as on Button.
+      className={`grid h-8 w-8 shrink-0 place-items-center transition-[background-color,color,transform] duration-150 active:scale-[.94] disabled:pointer-events-none disabled:opacity-35 ${
+        round ? "rounded-full" : nested ? "rounded-sm" : "rounded-ctl"
       } ${tone} ${className}`}
       {...rest}
     >
@@ -106,16 +110,27 @@ export function Segmented<T extends string | number>({
   label,
   format = (v) => String(v),
   title,
+  mono = true,
+  wrap = false,
 }: {
   options: readonly T[];
-  value: T;
+  /** Null when nothing is chosen yet. */
+  value: T | null;
   onChange: (v: T) => void;
   label: string;
   format?: (v: T) => string;
   title?: (v: T) => string;
+  /** The mono face is for numbers; names read in the interface face. */
+  mono?: boolean;
+  /** Let a long set of names break onto a second row in a narrow rail. */
+  wrap?: boolean;
 }) {
   return (
-    <div role="group" aria-label={label} className="flex items-center gap-0.5 rounded-ctl bg-white/[.05] p-1">
+    <div
+      role="group"
+      aria-label={label}
+      className={`flex items-center gap-0.5 rounded-ctl bg-white/[.05] p-1 ${wrap ? "flex-wrap" : ""}`}
+    >
       {options.map((o) => {
         const on = o === value;
         return (
@@ -125,7 +140,9 @@ export function Segmented<T extends string | number>({
             onClick={() => onChange(o)}
             aria-pressed={on}
             title={title?.(o)}
-            className={`tnum rounded-sm px-2 py-1 font-mono text-[11.5px] transition-[background-color,color] duration-150 ${
+            className={`rounded-sm px-2 py-1 transition-[background-color,color] duration-150 ${
+              mono ? "tnum font-mono text-[11.5px]" : "text-[12px]"
+            } ${
               on ? "bg-leader text-black" : "text-ink-2 hover:bg-white/[.07] hover:text-ink"
             }`}
           >

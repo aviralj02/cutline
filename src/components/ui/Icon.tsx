@@ -8,7 +8,13 @@
 import {
   ArrowUp,
   Blend,
+  Check,
+  ChevronDown,
   ChevronFirst,
+  KeyRound,
+  LoaderCircle,
+  Search,
+  Square,
   ChevronLast,
   Crop,
   Crosshair,
@@ -81,3 +87,13 @@ export const AddMediaIcon = (p: IconProps) => <FilePlus2 {...line} {...p} />;
 export const UndoActionIcon = (p: IconProps) => <Undo2 {...line} {...p} />;
 export const RedoActionIcon = (p: IconProps) => <Redo2 {...line} {...p} />;
 export const NewProjectIcon = (p: IconProps) => <FolderPlus {...line} {...p} />;
+
+/* The agent's controls. Stop is solid, like the transport marks it sits beside. */
+export const StopIcon = (p: IconProps) => <Square {...solid} {...p} />;
+export const KeyIcon = (p: IconProps) => <KeyRound {...line} {...p} />;
+export const ChevronIcon = (p: IconProps) => <ChevronDown {...line} {...p} />;
+export const CheckIcon = (p: IconProps) => <Check {...line} {...p} />;
+export const SearchIcon = (p: IconProps) => <Search {...line} {...p} />;
+export const WorkingIcon = ({ className = "", ...p }: IconProps) => (
+  <LoaderCircle {...line} {...p} className={`animate-spin ${className}`} />
+);
