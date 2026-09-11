@@ -5,7 +5,7 @@ export type Sec = number;
 
 export const ClipSchema = z.object({
   id: z.string(),
-  /** Media id in the OPFS store. */
+  /** Media id in the OPFS store, or "slug" for a gap (see `isSlug`). */
   src: z.string(),
   /** Source in-point, seconds into the original file. */
   in: z.number().min(0),

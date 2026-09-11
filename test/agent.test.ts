@@ -83,11 +83,9 @@ describe("editing tools", () => {
     expect(duration(edl)).toBe(30);
   });
 
-  test("add_text places an overlay", () => {
-    const { edl } = applyTool(base(), ctx, "add_text", {
-      at: 2, dur: 3, content: "Intro", style: "title",
-    });
-    expect(edl.text[0]).toMatchObject({ at: 2, dur: 3, content: "Intro", style: "title" });
+  test("text is not offered to the agent while there is no manual way to edit it", () => {
+    expect(TOOLS.map((t) => t.name).filter((n) => n.includes("text"))).toEqual([]);
+    expect(applyTool(base(), ctx, "add_text", { at: 2, dur: 3, content: "Intro" }).result).toContain("no tool named");
   });
 
   test("set_speed changes timeline duration", () => {

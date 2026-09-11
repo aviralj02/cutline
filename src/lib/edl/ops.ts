@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import type { Clip, Crop, Edl, Sec, TextClip } from "./types";
-import { clipDur, FULL_FRAME, placed, snap } from "./query";
+import { clipDur, FULL_FRAME, isSlug, placed, SLUG, snap } from "./query";
 
 const id = () => nanoid(8);
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -12,6 +12,16 @@ export function normalize(edl: Edl): Edl {
   next.clips = next.clips
     .map((c) => ({ ...c, in: snap(c.in, f), out: snap(c.out, f) }))
     .filter((c) => c.out - c.in > 1 / f / 2);
+  // Gaps in one canonical form: 0 to their length, merged where they meet, never left at the end.
+  const clips: Clip[] = [];
+  for (const c of next.clips) {
+    const last = clips.at(-1);
+    if (!isSlug(c)) clips.push(c);
+    else if (last && isSlug(last)) last.out = snap(last.out + c.out - c.in, f);
+    else clips.push({ id: c.id, src: SLUG, in: 0, out: snap(c.out - c.in, f) });
+  }
+  while (clips.length && isSlug(clips[clips.length - 1])) clips.pop();
+  next.clips = clips;
   next.text = next.text
     .map((t) => ({ ...t, at: snap(Math.max(0, t.at), f), dur: snap(t.dur, f) }))
     .filter((t) => t.dur > 0);
@@ -131,18 +141,14 @@ export function deleteClip(edl: Edl, clipId: string): Edl {
 /** Retime a clip's source window without moving anything else. */
 export function trimClip(edl: Edl, clipId: string, inPt?: Sec, outPt?: Sec): Edl {
   const clips = edl.clips.map((c) =>
-    c.id === clipId ? { ...c, in: inPt ?? c.in, out: outPt ?? c.out } : c,
+    c.id === clipId && !isSlug(c) ? { ...c, in: inPt ?? c.in, out: outPt ?? c.out } : c,
   );
   return normalize({ ...edl, clips });
 }
 
-/**
- * Drag one edge of a clip on the timeline.
- *
- * The track is contiguous, so shortening a clip's head pulls everything after
- * it earlier — a ripple trim. `sourceDur` is the length of the underlying
- * file: without it a clip could be extended past the end of its own footage.
- */
+const slug = (slugId: string, dur: Sec): Clip => ({ id: slugId, src: SLUG, in: 0, out: dur });
+
+/** Drag one edge of a clip: only that edge moves, and a slug holds any space it frees. */
 export function trimClipEdge(
   edl: Edl,
   clipId: string,
@@ -150,28 +156,38 @@ export function trimClipEdge(
   timelineT: Sec,
   sourceDur?: Sec,
 ): Edl {
-  const spot = placed(edl).find((p) => p.clip.id === clipId);
-  if (!spot) return edl;
+  const spots = placed(edl);
+  const i = spots.findIndex((p) => p.clip.id === clipId);
+  const spot = spots[i];
+  if (!spot || isSlug(spot.clip)) return edl;
   const c = spot.clip;
   const rate = c.speed ?? 1;
   // Two frames is the shortest clip worth having.
-  const min = (2 / edl.fps) * rate;
-  // Where the drag lands, expressed in the source file's own time.
-  const atSource = c.in + (timelineT - spot.start) * rate;
+  const shortest = 2 / edl.fps;
+  const clips = [...edl.clips];
 
   if (edge === "start") {
-    const inPt = Math.max(0, Math.min(c.out - min, atSource));
-    return normalize({
-      ...edl,
-      clips: edl.clips.map((x) => (x.id === clipId ? { ...x, in: inPt } : x)),
-    });
+    const before = spots[i - 1];
+    const gap = before && isSlug(before.clip) ? before.end - before.start : 0;
+    // Back out only as far as the gap before it and its own footage allow.
+    const at = Math.min(spot.end - shortest, Math.max(spot.start - gap, spot.start - c.in / rate, timelineT));
+    const d = at - spot.start;
+    clips[i] = { ...c, in: c.in + d * rate };
+    if (gap) clips[i - 1] = slug(before.clip.id, gap + d);
+    else if (d > 0) clips.splice(i, 0, slug(id(), d));
+  } else {
+    const after = spots[i + 1];
+    const gap = after && isSlug(after.clip) ? after.end - after.start : 0;
+    // The last clip is free to grow to the end of its footage; any other stops at the next clip.
+    const room = after ? gap : Number.POSITIVE_INFINITY;
+    const footage = sourceDur === undefined ? Number.POSITIVE_INFINITY : spot.start + (sourceDur - c.in) / rate;
+    const at = Math.max(spot.start + shortest, Math.min(spot.end + room, footage, timelineT));
+    const d = at - spot.end;
+    clips[i] = { ...c, out: c.out + d * rate };
+    if (gap) clips[i + 1] = slug(after.clip.id, gap - d);
+    else if (after && d < 0) clips.splice(i + 1, 0, slug(id(), -d));
   }
-  const limit = sourceDur ?? Number.POSITIVE_INFINITY;
-  const outPt = Math.min(limit, Math.max(c.in + min, atSource));
-  return normalize({
-    ...edl,
-    clips: edl.clips.map((x) => (x.id === clipId ? { ...x, out: outPt } : x)),
-  });
+  return normalize({ ...edl, clips });
 }
 
 /** Reorder a clip within the track. */
@@ -184,8 +200,18 @@ export function moveClip(edl: Edl, clipId: string, toIndex: number): Edl {
   return normalize({ ...edl, clips });
 }
 
+/** Two clips trade places; any gap between them stays where it is. */
+export function swapClips(edl: Edl, aId: string, bId: string): Edl {
+  const i = edl.clips.findIndex((c) => c.id === aId);
+  const j = edl.clips.findIndex((c) => c.id === bId);
+  if (i < 0 || j < 0 || i === j) return edl;
+  const clips = [...edl.clips];
+  [clips[i], clips[j]] = [clips[j], clips[i]];
+  return normalize({ ...edl, clips });
+}
+
 export function setSpeed(edl: Edl, clipId: string, rate: number): Edl {
-  const clips = edl.clips.map((c) => (c.id === clipId ? { ...c, speed: rate } : c));
+  const clips = edl.clips.map((c) => (c.id === clipId && !isSlug(c) ? { ...c, speed: rate } : c));
   return normalize({ ...edl, clips });
 }
 

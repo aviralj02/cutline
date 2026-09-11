@@ -10,6 +10,15 @@ export const snap = (t: Sec, fps: number): Sec => Math.round(t * fps) / fps;
 /** Duration this clip occupies on the timeline, after speed. */
 export const clipDur = (c: Clip): Sec => Math.max(0, c.out - c.in) / (c.speed ?? 1);
 
+/** A gap on the track is a clip of blank leader, a "slug": no file behind it, `in` 0, `out` its length. */
+export const SLUG = "slug";
+export const isSlug = (c: Clip): boolean => c.src === SLUG;
+/** Clips with footage; gaps don't count. */
+export const clipCount = (edl: Edl): number => edl.clips.filter((c) => !isSlug(c)).length;
+/** A clip's number as the user sees it, counting footage only; 0 for a gap. */
+export const clipNumber = (edl: Edl, id: string): number =>
+  edl.clips.filter((c) => !isSlug(c)).findIndex((c) => c.id === id) + 1;
+
 export interface Placed {
   clip: Clip;
   index: number;
@@ -53,6 +62,7 @@ export const duration = (edl: Edl): Sec => {
 export function resolve(edl: Edl, t: Sec): { clip: Clip; sourceTime: Sec } | null {
   for (const p of placed(edl)) {
     if (t >= p.start && t < p.end) {
+      if (isSlug(p.clip)) return null;
       return { clip: p.clip, sourceTime: p.clip.in + (t - p.start) * (p.clip.speed ?? 1) };
     }
   }

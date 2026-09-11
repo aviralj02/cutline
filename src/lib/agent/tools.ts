@@ -1,12 +1,12 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Edl } from "../edl/types";
 import {
-  cropOf, duration, fmt, isCropped, isFade, outputSize, placed,
+  clipCount, cropOf, duration, fmt, isCropped, isFade, isSlug, outputSize, placed,
   sourceRangeToTimeline, tracksOf,
 } from "../edl/query";
 import {
-  addEffect, addText, addTrack, deleteClip, FADE_COLORS, makeEffect, moveClip,
-  removeText, resetCrop, rippleDelete, rippleDeleteMany, setCropAspect,
+  addEffect, addTrack, deleteClip, FADE_COLORS, makeEffect, moveClip,
+  resetCrop, rippleDelete, rippleDeleteMany, setCropAspect,
   setSpeed, splitAt, trackFor, trimClip, trimTimeline,
 } from "../edl/ops";
 
@@ -78,7 +78,7 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "delete_clip",
-    description: "Remove one clip by id and close the gap.",
+    description: "Remove one clip by id and close the space it leaves. Given a gap's id, closes that gap.",
     strict: true,
     input_schema: obj({ clip_id: str("Clip id from the timeline listing.") }, ["clip_id"]),
   },
@@ -103,20 +103,6 @@ export const TOOLS: Anthropic.Tool[] = [
     description: "Change a clip's playback rate. 2 plays twice as fast and halves its timeline duration.",
     strict: true,
     input_schema: obj({ clip_id: str("Clip id."), rate: num("0.1 to 10.") }, ["clip_id", "rate"]),
-  },
-  {
-    name: "add_text",
-    description: "Add a text overlay at an absolute timeline position.",
-    strict: true,
-    input_schema: obj(
-      {
-        at: num("Timeline seconds."),
-        dur: num("Seconds on screen."),
-        content: str("The text."),
-        style: { type: "string", enum: ["title", "lower-third", "caption"], description: "Visual treatment." },
-      },
-      ["at", "dur", "content", "style"],
-    ),
   },
   {
     name: "add_fade",
@@ -169,12 +155,6 @@ export const TOOLS: Anthropic.Tool[] = [
       ["aspect"],
     ),
   },
-  {
-    name: "remove_text",
-    description: "Remove a text overlay by id.",
-    strict: true,
-    input_schema: obj({ text_id: str("Text overlay id.") }, ["text_id"]),
-  },
 ];
 
 export interface ToolOutcome {
@@ -195,7 +175,7 @@ export function applyTool(edl: Edl, ctx: AgentContext, name: string, input: Inpu
   const done = (next: Edl, summary: string): ToolOutcome => ({
     edl: next,
     summary,
-    result: `${summary}. Timeline is now ${fmt(duration(next))} with ${next.clips.length} clip(s).`,
+    result: `${summary}. Timeline is now ${fmt(duration(next))} with ${clipCount(next)} clip(s).`,
   });
 
   switch (name) {
@@ -247,18 +227,6 @@ export function applyTool(edl: Edl, ctx: AgentContext, name: string, input: Inpu
       return done(moveClip(edl, s(input.clip_id), n(input.to_index)), `Moved clip ${s(input.clip_id)}`);
     case "set_speed":
       return done(setSpeed(edl, s(input.clip_id), n(input.rate, 1)), `Set clip ${s(input.clip_id)} to ${n(input.rate, 1)}×`);
-    case "add_text": {
-      const content = s(input.content);
-      return done(
-        addText(edl, {
-          at: n(input.at),
-          dur: n(input.dur, 3),
-          content,
-          style: (s(input.style, "caption") as "title" | "lower-third" | "caption"),
-        }),
-        `Added text “${content.slice(0, 40)}”`,
-      );
-    }
     case "add_fade": {
       const at = n(input.at);
       const dur = Math.max(0.08, n(input.dur, 1));
@@ -302,8 +270,6 @@ export function applyTool(edl: Edl, ctx: AgentContext, name: string, input: Inpu
       const size = outputSize(next);
       return done(next, `Reframed to ${key} (${size.width} × ${size.height})`);
     }
-    case "remove_text":
-      return done(removeText(edl, s(input.text_id)), `Removed text ${s(input.text_id)}`);
     default:
       return { edl, summary: `Unknown tool ${name}`, result: `Error: no tool named ${name}.` };
   }
@@ -313,7 +279,7 @@ export function applyTool(edl: Edl, ctx: AgentContext, name: string, input: Inpu
 export function describeState(edl: Edl, ctx: AgentContext): string {
   const lines: string[] = [];
   const size = outputSize(edl);
-  lines.push(`Timeline: ${fmt(duration(edl))}, ${edl.clips.length} clip(s), ${edl.fps}fps`);
+  lines.push(`Timeline: ${fmt(duration(edl))}, ${clipCount(edl)} clip(s), ${edl.fps}fps`);
   lines.push(`Frame: source ${edl.width}x${edl.height}, output ${size.width}x${size.height}`);
   if (isCropped(edl)) {
     const c = cropOf(edl);
@@ -322,6 +288,10 @@ export function describeState(edl: Edl, ctx: AgentContext): string {
 
   lines.push("", "Clips (timeline position | source range):");
   for (const p of placed(edl)) {
+    if (isSlug(p.clip)) {
+      lines.push(`  [${p.index}] id=${p.clip.id} ${fmt(p.start)}–${fmt(p.end)} | gap, plays as black`);
+      continue;
+    }
     const m = ctx.media.find((x) => x.id === p.clip.src);
     const speed = p.clip.speed && p.clip.speed !== 1 ? ` ${p.clip.speed}x` : "";
     lines.push(

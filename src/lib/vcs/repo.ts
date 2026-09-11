@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import type { Edl } from "../edl/types";
-import { duration, placed } from "../edl/query";
+import { clipCount, duration, isSlug } from "../edl/query";
 
 export type Author = "you" | "agent";
 
@@ -171,8 +171,9 @@ export interface Diff {
 
 /** A semantic diff. Nobody wants to read a JSON patch of their edit. */
 export function diff(a: Edl | null, b: Edl): Diff {
-  const prevClips = new Set((a?.clips ?? []).map((c) => c.id));
-  const nextClips = new Set(b.clips.map((c) => c.id));
+  // Gaps aren't clips: opening or closing one shows as a change in length, not as a clip.
+  const prevClips = new Set((a?.clips ?? []).filter((c) => !isSlug(c)).map((c) => c.id));
+  const nextClips = new Set(b.clips.filter((c) => !isSlug(c)).map((c) => c.id));
   const prevText = new Set((a?.text ?? []).map((t) => t.id));
   const nextText = new Set(b.text.map((t) => t.id));
 
@@ -198,8 +199,8 @@ export function diff(a: Edl | null, b: Edl): Diff {
 }
 
 export const stats = (edl: Edl) => ({
-  clips: edl.clips.length,
+  clips: clipCount(edl),
   text: edl.text.length,
   duration: duration(edl),
-  cuts: Math.max(0, placed(edl).length - 1),
+  cuts: Math.max(0, clipCount(edl) - 1),
 });

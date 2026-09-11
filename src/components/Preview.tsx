@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, useEdl } from "@/lib/store";
-import { cropOf, duration, fadeAt, fmt, isCropped, outputSize, placed, zoomAt } from "@/lib/edl/query";
+import { cropOf, duration, fadeAt, fmt, isCropped, isSlug, outputSize, placed, zoomAt } from "@/lib/edl/query";
 import { mediaUrl } from "@/lib/media/opfs";
 import type { Edl } from "@/lib/edl/types";
 import { findEffect, resetCrop, setCrop, setCropAspect, updateEffect } from "@/lib/edl/ops";
@@ -122,7 +122,8 @@ export default function Preview() {
 
   useEffect(() => {
     let raf = 0;
-    const frame = () => {
+    let last: number | null = null;
+    const frame = (now: number) => {
       raf = requestAnimationFrame(frame);
       const canvas = canvasRef.current;
       const cur = edlRef.current;
@@ -133,9 +134,12 @@ export default function Preview() {
       const spots = placed(cur);
       const t = headRef.current;
       const spot = spots.find((p) => t >= p.start && t < p.end) ?? null;
+      const gap = !!spot && isSlug(spot.clip);
+      const tick = last === null ? 0 : (now - last) / 1000;
+      last = now;
 
       for (const [id, v] of pool.current) {
-        if (!spot || id !== spot.clip.src) {
+        if (!spot || gap || id !== spot.clip.src) {
           if (!v.paused) v.pause();
         }
       }
@@ -148,34 +152,40 @@ export default function Preview() {
         return;
       }
 
-      const v = pool.current.get(spot.clip.src);
-      if (!v || !v.videoWidth) return;
+      const v = gap ? null : (pool.current.get(spot.clip.src) ?? null);
+      if (gap) {
+        // A gap has no video to keep time, so the frame clock carries the playhead across it.
+        const after = spots[spot.index + 1];
+        const nv = after && !isSlug(after.clip) ? pool.current.get(after.clip.src) : undefined;
+        if (nv && Math.abs(nv.currentTime - after.clip.in) > 0.05) nv.currentTime = after.clip.in;
+        if (playRef.current) setPlayhead(Math.min(spot.end, t + tick), true);
+      } else {
+        if (!v || !v.videoWidth) return;
+        const rate = spot.clip.speed ?? 1;
+        const wanted = spot.clip.in + (t - spot.start) * rate;
 
-      const rate = spot.clip.speed ?? 1;
-      const wanted = spot.clip.in + (t - spot.start) * rate;
-
-      if (playRef.current) {
-        v.playbackRate = rate;
-        if (v.paused) void v.play().catch(() => setPlaying(false));
-        // A cut is a seek: at the out-point, jump rather than play through.
-        if (v.currentTime >= spot.clip.out - 0.03) {
-          const next = spots[spot.index + 1];
-          if (!next) {
-            setPlaying(false);
-            setPlayhead(spot.end, true);
+        if (playRef.current) {
+          v.playbackRate = rate;
+          if (v.paused) void v.play().catch(() => setPlaying(false));
+          // A cut is a seek: at the out-point, jump rather than play through.
+          if (v.currentTime >= spot.clip.out - 0.03) {
+            const next = spots[spot.index + 1];
+            if (!next) {
+              setPlaying(false);
+              setPlayhead(spot.end, true);
+            } else {
+              const nv = isSlug(next.clip) ? undefined : pool.current.get(next.clip.src);
+              if (nv) nv.currentTime = next.clip.in;
+              setPlayhead(next.start + 0.001, true);
+            }
           } else {
-            const nv = pool.current.get(next.clip.src);
-            if (nv) nv.currentTime = next.clip.in;
-            setPlayhead(next.start + 0.001, true);
+            // The video element is the clock inside a clip, so audio and picture stay locked.
+            setPlayhead(spot.start + (v.currentTime - spot.clip.in) / rate, true);
           }
         } else {
-          // The video element is the clock inside a clip, so audio and
-          // picture stay locked together.
-          setPlayhead(spot.start + (v.currentTime - spot.clip.in) / rate, true);
+          if (!v.paused) v.pause();
+          if (Math.abs(v.currentTime - wanted) > 0.05) v.currentTime = wanted;
         }
-      } else {
-        if (!v.paused) v.pause();
-        if (Math.abs(v.currentTime - wanted) > 0.05) v.currentTime = wanted;
       }
 
       // Draw in composition coordinates and let one transform apply the
@@ -194,23 +204,25 @@ export default function Preview() {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.setTransform(k, 0, 0, k, -vx * W * k, -vy * H * k);
 
-      const scale = Math.min(W / v.videoWidth, H / v.videoHeight);
-      const dw = v.videoWidth * scale;
-      const dh = v.videoHeight * scale;
+      // A gap draws no picture, but titles and fades still land on its black.
+      if (v) {
+        const scale = Math.min(W / v.videoWidth, H / v.videoHeight);
+        const dw = v.videoWidth * scale;
+        const dh = v.videoHeight * scale;
 
-      // Zoom is a transform about its focal point, applied inside the crop so
-      // the two compose the way the viewer expects: punch in, then reframe.
-      const zoom = zoomAt(cur, t);
-      if (zoom) {
-        ctx.save();
-        const fx = zoom.x * W;
-        const fy = zoom.y * H;
-        ctx.translate(fx, fy);
-        ctx.scale(zoom.scale, zoom.scale);
-        ctx.translate(-fx, -fy);
+        // Zoom scales about its focal point inside the crop: punch in, then reframe.
+        const zoom = zoomAt(cur, t);
+        if (zoom) {
+          ctx.save();
+          const fx = zoom.x * W;
+          const fy = zoom.y * H;
+          ctx.translate(fx, fy);
+          ctx.scale(zoom.scale, zoom.scale);
+          ctx.translate(-fx, -fy);
+        }
+        ctx.drawImage(v, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        if (zoom) ctx.restore();
       }
-      ctx.drawImage(v, (W - dw) / 2, (H - dh) / 2, dw, dh);
-      if (zoom) ctx.restore();
 
       // Titles ride above the zoom — a caption that scales with a punch-in
       // reads as a mistake, not as an effect.

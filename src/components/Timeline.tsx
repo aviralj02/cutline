@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, useEdl } from "@/lib/store";
-import { dropSlot, duration, fmt, isFade, placed, tracksOf } from "@/lib/edl/query";
+import { clipCount, clipNumber, dropSlot, duration, fmt, isFade, isSlug, placed, tracksOf } from "@/lib/edl/query";
 import {
   addEffect, addTrack, deleteClip, makeEffect, moveClip, moveEffect, removeEffect,
-  removeTrack, setSpeed, splitAt, trackOfEffect, trimClipEdge, trimEffect,
+  removeTrack, setSpeed, splitAt, swapClips, trackOfEffect, trimClipEdge, trimEffect,
 } from "@/lib/edl/ops";
 import type { Effect, TrackKind } from "@/lib/edl/types";
 import EffectInspector from "./EffectInspector";
@@ -206,7 +206,8 @@ export default function Timeline() {
   // exclusive, so there is never a question of which one goes.
   const removeSelected = useCallback(() => {
     if (selected) {
-      apply(deleteClip(edl, selected), "Delete clip");
+      const target = edl.clips.find((c) => c.id === selected);
+      apply(deleteClip(edl, selected), target && isSlug(target) ? "Close gap" : "Delete clip");
       return;
     }
     const track = selectedEffect ? trackOfEffect(edl, selectedEffect) : null;
@@ -215,7 +216,7 @@ export default function Timeline() {
     apply(removeEffect(edl, selectedEffect), `Remove ${track.name.toLowerCase()}`);
   }, [apply, edl, selected, selectedEffect, selectEffect]);
 
-  const selectedClip = edl.clips.find((c) => c.id === selected) ?? null;
+  const selectedClip = edl.clips.find((c) => c.id === selected && !isSlug(c)) ?? null;
   const speed = selectedClip?.speed ?? 1;
   const changeSpeed = (rate: number) => {
     if (!selectedClip) return;
@@ -256,11 +257,16 @@ export default function Timeline() {
       // wrapping a slider is not a thing a screen reader can make sense of.
       if (e.altKey && selected && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         const from = edl.clips.findIndex((c) => c.id === selected);
-        const to = from + (e.key === "ArrowLeft" ? -1 : 1);
-        if (from < 0 || to < 0 || to >= edl.clips.length) return;
+        if (from < 0 || isSlug(edl.clips[from])) return;
+        // Swap with the nearest clip that way; a gap between them stays put.
+        const dir = e.key === "ArrowLeft" ? -1 : 1;
+        let to = from + dir;
+        while (edl.clips[to] && isSlug(edl.clips[to])) to += dir;
+        if (to < 0 || to >= edl.clips.length) return;
         // Alt+Arrow is Back and Forward in some browsers.
         e.preventDefault();
-        apply(moveClip(edl, selected, to), `Move clip ${from + 1} to position ${to + 1}`);
+        const next = swapClips(edl, selected, edl.clips[to].id);
+        apply(next, `Move clip ${clipNumber(edl, selected)} to position ${clipNumber(next, selected)}`);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -338,7 +344,7 @@ export default function Timeline() {
     (e: React.PointerEvent, spot: { clip: { id: string }; start: number; end: number }) => {
       if (e.button !== 0) return;
       select(spot.clip.id);
-      if (edl.clips.length < 2) return;
+      if (clipCount(edl) < 2) return;
 
       const home = edl.clips.findIndex((c) => c.id === spot.clip.id);
       const grabbedAt = timeAt(e.clientX) - spot.start;
@@ -364,7 +370,10 @@ export default function Timeline() {
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
         setCarrying(null);
-        if (moved && target !== home) commitDraft(`Move clip ${home + 1} to position ${target + 1}`);
+        if (moved && target !== home) {
+          const id = spot.clip.id;
+          commitDraft(`Move clip ${clipNumber(edl, id)} to position ${clipNumber(moveClip(edl, id, target), id)}`);
+        }
         else setDraft(null);
       };
       window.addEventListener("pointermove", move);
@@ -559,7 +568,7 @@ export default function Timeline() {
       <div className="flex h-12 items-center gap-1 border-b border-edge px-3.5">
         <h2 className="text-[13px] font-semibold tracking-[-.01em] text-ink">Timeline</h2>
         <span className="ml-2 text-[12px] text-ink-3">
-          {edl.clips.length} clip{edl.clips.length === 1 ? "" : "s"}
+          {clipCount(edl)} clip{clipCount(edl) === 1 ? "" : "s"}
         </span>
 
         <div className="ml-auto flex items-center gap-1">
@@ -688,6 +697,37 @@ export default function Timeline() {
                       className="relative h-20 shrink-0 touch-none overflow-hidden rounded-gate bg-[#0d0d0d] ring-1 ring-edge"
                     >
                       {spots.map((p) => {
+                        if (isSlug(p.clip)) {
+                          const isSel = selected === p.clip.id;
+                          const secs = (p.end - p.start).toFixed(1);
+                          return (
+                            <button
+                              key={p.clip.id}
+                              type="button"
+                              data-gap={p.clip.id}
+                              aria-label={`Gap of ${secs} seconds`}
+                              title="Plays as black. Select it and press Backspace to close it."
+                              onPointerDown={(e) => {
+                                if (e.button !== 0) return;
+                                e.stopPropagation();
+                                select(p.clip.id);
+                              }}
+                              onClick={() => select(p.clip.id)}
+                              className={`absolute inset-y-0.5 grid place-items-center overflow-hidden rounded-sm border border-dashed transition-colors ${
+                                isSel ? "border-leader bg-leader/[.06]" : "border-edge hover:bg-white/[.03]"
+                              }`}
+                              style={{
+                                left: `calc(${pct(p.start)}% + 2px)`,
+                                width: `calc(${pct(p.end - p.start)}% - 4px)`,
+                              }}
+                            >
+                              <span className="tnum pointer-events-none truncate px-1 font-mono text-[10px] text-ink-3">
+                                {secs}s gap
+                              </span>
+                            </button>
+                          );
+                        }
+                        const number = clipNumber(edl, p.clip.id);
                         const wave = waveforms[p.clip.src] ?? [];
                         const mediaDur = media.find((m) => m.id === p.clip.src)?.duration || p.clip.out;
                         const isSel = selected === p.clip.id;
@@ -708,17 +748,17 @@ export default function Timeline() {
                             data-clip={p.clip.id}
                             onPointerDown={(e) => startClipDrag(e, p)}
                             title={
-                              `Clip ${p.index + 1} — timeline ${fmt(p.start)} to ${fmt(p.end)}, ` +
+                              `Clip ${number} — timeline ${fmt(p.start)} to ${fmt(p.end)}, ` +
                               `from source ${fmt(p.clip.in)} to ${fmt(p.clip.out)}. ` +
                               `Drag either edge to trim` +
-                              (edl.clips.length > 1
+                              (clipCount(edl) > 1
                                 ? `, drag the body to reorder, or select it and press Alt with the arrow keys.`
                                 : `.`)
                             }
                             className={`group absolute inset-y-0.5 overflow-hidden rounded-sm transition-[box-shadow,background-color] ${
-                              p.index % 2 ? "bg-[#242424]" : "bg-[#1f1f1f]"
+                              number % 2 ? "bg-[#1f1f1f]" : "bg-[#242424]"
                             } ${
-                              edl.clips.length > 1
+                              clipCount(edl) > 1
                                 ? "cursor-grab active:cursor-grabbing"
                                 : "cursor-pointer"
                             }`}
@@ -767,7 +807,7 @@ export default function Timeline() {
                                 key={edge}
                                 role="slider"
                                 tabIndex={0}
-                                aria-label={`Trim ${edge} of clip ${p.index + 1}`}
+                                aria-label={`Trim ${edge} of clip ${number}`}
                                 aria-valuemin={0}
                                 aria-valuemax={Math.round(total * 100) / 100}
                                 aria-valuenow={Math.round((edge === "start" ? p.start : p.end) * 100) / 100}
@@ -795,7 +835,7 @@ export default function Timeline() {
                               </span>
                             ))}
                             <span className="tnum pointer-events-none absolute left-2 top-1 flex items-center gap-1.5 font-mono text-[10px] text-ink-3 [text-shadow:0_1px_3px_rgba(0,0,0,.9)]">
-                              {p.index + 1}
+                              {number}
                               {p.clip.speed && p.clip.speed !== 1 && (
                                 <span className="rounded-[3px] bg-leader/20 px-1 text-leader">{p.clip.speed}×</span>
                               )}
@@ -987,9 +1027,9 @@ export default function Timeline() {
               )}
               {/* The newer affordance wins the hint: reordering is the one
                   that is not visible from the controls. */}
-              {(edl.clips.length > 1 || tracks.length > 0) && (
+              {(clipCount(edl) > 1 || tracks.length > 0) && (
                 <span className="ml-1 hidden text-[11px] text-ink-3 lg:inline">
-                  {edl.clips.length > 1
+                  {clipCount(edl) > 1
                     ? "Drag a clip to reorder it"
                     : "Double-click a lane to add at the playhead"}
                 </span>
