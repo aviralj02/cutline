@@ -30,11 +30,18 @@ export function normalize(edl: Edl): Edl {
   if (next.crop && next.crop.x === 0 && next.crop.y === 0 && next.crop.w === 1 && next.crop.h === 1) {
     delete next.crop;
   }
+  // Sound on is the default, so it's stored only when off.
+  if (!next.videoMuted) delete next.videoMuted;
   if (next.tracks) {
     next.tracks = next.tracks.map((t) => ({
       ...t,
       items: t.items
-        .map((e) => ({ ...e, at: snap(Math.max(0, e.at), f), dur: snap(e.dur, f) }))
+        .map((e) => ({
+          ...e,
+          at: snap(Math.max(0, e.at), f),
+          dur: snap(e.dur, f),
+          ...(e.kind === "sound" && { in: snap(e.in, f) }),
+        }) as Effect)
         .filter((e) => e.dur >= 1 / f)
         .sort((a, b) => a.at - b.at),
     }));
@@ -287,8 +294,8 @@ export { clipDur };
    and anything added later.
    ------------------------------------------------------------------------- */
 
-import type { Effect, Track, TrackKind } from "./types";
-import { tracksOf } from "./query";
+import type { Effect, Sound, Track, TrackKind } from "./types";
+import { duration, isSound, tracksOf } from "./query";
 
 /** A palette grounded in what film actually fades to. */
 export const FADE_COLORS: Array<{ name: string; value: string }> = [
@@ -302,7 +309,7 @@ export const FADE_COLORS: Array<{ name: string; value: string }> = [
   { name: "Bone", value: "#e8e2d4" },
 ];
 
-const TRACK_NAMES: Record<TrackKind, string> = { fade: "Fade", zoom: "Zoom" };
+const TRACK_NAMES: Record<TrackKind, string> = { fade: "Fade", zoom: "Zoom", sound: "Sound" };
 
 /**
  * At most one lane per kind. Every fade lives on the fade lane, so there is
@@ -313,8 +320,9 @@ export function addTrack(edl: Edl, kind: TrackKind): Edl {
   const tracks = tracksOf(edl);
   if (tracks.some((t) => t.kind === kind)) return edl;
   const track: Track = { id: id(), kind, name: TRACK_NAMES[kind], items: [] };
-  // Fades sit under zooms, matching the order they are composited in.
-  const next = [...tracks, track].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "fade" ? -1 : 1));
+  // Fades sit under zooms, as they composite; sound goes below the picture's lanes.
+  const rank: Record<TrackKind, number> = { fade: 0, zoom: 1, sound: 2 };
+  const next = [...tracks, track].sort((a, b) => rank[a.kind] - rank[b.kind]);
   return normalize({ ...edl, tracks: next });
 }
 
@@ -333,7 +341,7 @@ export function renameTrack(edl: Edl, trackId: string, name: string): Edl {
 }
 
 /** Default shapes, so adding an effect lands somewhere usable immediately. */
-export function makeEffect(kind: TrackKind, at: Sec, dur = 1): Effect {
+export function makeEffect(kind: "fade" | "zoom", at: Sec, dur = 1): Effect {
   return kind === "fade"
     ? { id: id(), kind: "fade", at, dur, color: "#000000", mode: "out" }
     : { id: id(), kind: "zoom", at, dur: Math.max(dur, 1.2), scale: 1.4, x: 0.5, y: 0.45, ramp: 0.4 };
@@ -381,13 +389,36 @@ export function trimEffect(edl: Edl, effectId: string, edge: "start" | "end", t:
     if (!item) continue;
     if (edge === "start") {
       const end = item.at + item.dur;
-      const at = Math.max(0, Math.min(end - MIN, t));
-      return updateEffect(edl, effectId, { at, dur: end - at } as Partial<Effect>);
+      // A sound's head moves through its file, and can't go back before the file starts.
+      const floor = isSound(item) ? Math.max(0, item.at - item.in) : 0;
+      const at = Math.max(floor, Math.min(end - MIN, t));
+      const into = isSound(item) ? { in: item.in + (at - item.at) } : {};
+      return updateEffect(edl, effectId, { at, dur: end - at, ...into } as Partial<Effect>);
     }
-    const dur = Math.max(MIN, t - item.at);
+    const ceiling = isSound(item) ? item.srcDur - item.in : Number.POSITIVE_INFINITY;
+    const dur = Math.min(ceiling, Math.max(MIN, t - item.at));
     return updateEffect(edl, effectId, { dur } as Partial<Effect>);
   }
   return edl;
+}
+
+/** Put a sound file on the sound lane at `at`, as long as the edit allows, making the lane if needed. */
+export function addSound(edl: Edl, s: { src: string; srcDur: Sec; at: Sec }): Edl {
+  const withLane = trackFor(edl, "sound") ? edl : addTrack(edl, "sound");
+  const lane = trackFor(withLane, "sound")!;
+  const end = duration(withLane);
+  const at = Math.max(0, Math.min(s.at, end > 0.5 ? end - 0.5 : 0));
+  const room = end > at ? end - at : s.srcDur;
+  const item: Sound = {
+    id: id(), kind: "sound", at, dur: Math.min(s.srcDur, room),
+    src: s.src, in: 0, srcDur: s.srcDur, volume: 1,
+  };
+  return addEffect(withLane, lane.id, item);
+}
+
+/** Turn the video's own sound off or on; sound lanes are unaffected. */
+export function setVideoMuted(edl: Edl, muted: boolean): Edl {
+  return normalize({ ...edl, videoMuted: muted });
 }
 
 export const findEffect = (edl: Edl, effectId: string): Effect | null =>

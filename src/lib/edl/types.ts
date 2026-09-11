@@ -65,11 +65,27 @@ export const ZoomSchema = z.object({
   ramp: z.number().min(0).max(5),
 });
 
-export const EffectSchema = z.discriminatedUnion("kind", [FadeSchema, ZoomSchema]);
+/** A sound file on the sound lane: an interval like any effect, plus where in the file it plays from. */
+export const SoundSchema = z.object({
+  id: z.string(),
+  kind: z.literal("sound"),
+  at: z.number().min(0),
+  dur: z.number().min(0.04),
+  /** Media id of the sound file in the OPFS store. */
+  src: z.string(),
+  /** Seconds into the file where it starts playing. */
+  in: z.number().min(0),
+  /** The file's length, so no trim can run past its end. */
+  srcDur: z.number().min(0),
+  /** 0 to 1. */
+  volume: z.number().min(0).max(1),
+});
+
+export const EffectSchema = z.discriminatedUnion("kind", [FadeSchema, ZoomSchema, SoundSchema]);
 
 export const TrackSchema = z.object({
   id: z.string(),
-  kind: z.enum(["fade", "zoom"]),
+  kind: z.enum(["fade", "zoom", "sound"]),
   name: z.string(),
   items: z.array(EffectSchema),
 });
@@ -93,11 +109,14 @@ export const EdlSchema = z.object({
   crop: CropSchema.optional(),
   /** Effect lanes, drawn below the video track in this order. */
   tracks: z.array(TrackSchema).optional(),
+  /** The video's own sound is off; sound lanes still play. Absent means on. */
+  videoMuted: z.boolean().optional(),
 });
 
 export type Crop = z.infer<typeof CropSchema>;
 export type Fade = z.infer<typeof FadeSchema>;
 export type Zoom = z.infer<typeof ZoomSchema>;
+export type Sound = z.infer<typeof SoundSchema>;
 export type Effect = z.infer<typeof EffectSchema>;
 export type Track = z.infer<typeof TrackSchema>;
 export type TrackKind = Track["kind"];

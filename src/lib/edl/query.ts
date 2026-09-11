@@ -135,7 +135,7 @@ export function outputSize(edl: Edl): { width: number; height: number } {
    Effects
    ------------------------------------------------------------------------- */
 
-import type { Effect, Fade, Track, Zoom } from "./types";
+import type { Effect, Fade, Sound, Track, Zoom } from "./types";
 
 export const tracksOf = (edl: Edl): Track[] => edl.tracks ?? [];
 
@@ -196,3 +196,7 @@ export function fadeAt(edl: Edl, t: Sec): { color: string; alpha: number } | nul
 
 export const isFade = (e: Effect): e is Fade => e.kind === "fade";
 export const isZoom = (e: Effect): e is Zoom => e.kind === "zoom";
+export const isSound = (e: Effect): e is Sound => e.kind === "sound";
+
+/** Every sound item, on whichever sound lane. */
+export const soundsOf = (edl: Edl): Sound[] => allEffects(edl).filter(isSound);
