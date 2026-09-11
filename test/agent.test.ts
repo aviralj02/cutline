@@ -1,6 +1,6 @@
 import { expect, test, describe } from "bun:test";
 import { emptyEdl } from "../src/lib/edl/types";
-import { insertClip } from "../src/lib/edl/ops";
+import { insertClip, splitAt, trimClipEdge } from "../src/lib/edl/ops";
 import { duration, fadeAt, isCropped, outputSize, resolve, tracksOf, zoomAt } from "../src/lib/edl/query";
 import { applyTool, describeState, TOOLS, type AgentContext } from "../src/lib/agent/tools";
 
@@ -114,6 +114,78 @@ describe("editing tools", () => {
   test("every tool returns the timeline state for the next turn", () => {
     const r = applyTool(base(), ctx, "ripple_delete", { start: 0, end: 10 });
     expect(r.result).toMatch(/Timeline is now .* with 1 clip/);
+  });
+});
+
+describe("working from loose requests", () => {
+  test("the model is told the playhead, the selection and the last change", () => {
+    const b = base();
+    const id = b.clips[0].id;
+    const s = describeState(b, { ...ctx, playhead: 12.5, selectedId: id, lastChange: { message: "Trim clip", before: b } });
+    expect(s).toContain("Playhead: 0:12.50");
+    expect(s).toContain("Selected: Clip 1");
+    expect(s).toContain('Last change: "Trim clip"');
+  });
+
+  test("clips are numbered the way the user sees them, with gaps named apart", () => {
+    let e = splitAt(base(), 30);
+    e = trimClipEdge(e, e.clips[0].id, "end", 20);
+    const s = describeState(e, ctx);
+    expect(s).toContain("[1] Gap");
+    expect(s).toContain("[2] Clip 2");
+  });
+
+  test("undo brings back the version before the last change", () => {
+    const b = base();
+    const cut = applyTool(b, ctx, "ripple_delete", { start: 0, end: 10 }).edl;
+    const r = applyTool(cut, { ...ctx, lastChange: { message: "Cut 0:00.00–0:10.00", before: b } }, "revert_last_change", {});
+    expect(duration(r.edl)).toBe(60);
+    expect(r.summary).toContain("Cut 0:00.00–0:10.00");
+  });
+
+  test("with nothing earlier, undo says so instead of changing anything", () => {
+    const b = base();
+    const r = applyTool(b, ctx, "revert_last_change", {});
+    expect(r.result).toContain("nothing earlier");
+    expect(r.edl).toBe(b);
+  });
+
+  test("close_gaps closes every gap at once", () => {
+    let e = splitAt(splitAt(base(), 20), 40);
+    e = trimClipEdge(e, e.clips[0].id, "end", 15);
+    e = trimClipEdge(e, e.clips.at(-1)!.id, "start", 45);
+    const r = applyTool(e, ctx, "close_gaps", {});
+    expect(r.edl.clips.some((c) => c.src === "slug")).toBe(false);
+    expect(r.summary).toContain("Closed 2 gaps");
+  });
+
+  test("a fade can be changed after it is made, and colours can be named", () => {
+    const e = applyTool(wide(), ctx, "add_fade", { at: 0, dur: 1, mode: "in", color: "White" }).edl;
+    const fade = tracksOf(e)[0].items[0];
+    expect(fade).toMatchObject({ color: "#ffffff" });
+    const r = applyTool(e, ctx, "adjust_lane_item", { item_id: fade.id, mode: "dip", color: "sepia", dur: 2 });
+    expect(tracksOf(r.edl)[0].items[0]).toMatchObject({ mode: "dip", color: "#3a2a18", dur: 2 });
+  });
+
+  test("a zoom can be pushed further and eased, then removed", () => {
+    const e = applyTool(wide(), ctx, "add_zoom", { at: 10, dur: 4, scale: 1.4 }).edl;
+    const zoom = tracksOf(e)[0].items[0];
+    const r = applyTool(e, ctx, "adjust_lane_item", { item_id: zoom.id, scale: 2, ease: 1 });
+    expect(tracksOf(r.edl)[0].items[0]).toMatchObject({ scale: 2, ramp: 1 });
+    expect(tracksOf(applyTool(r.edl, ctx, "remove_lane_item", { item_id: zoom.id }).edl)[0].items.length).toBe(0);
+  });
+
+  test("a field that doesn't apply is reported back, not applied", () => {
+    const e = applyTool(wide(), ctx, "add_fade", { at: 0, dur: 1, mode: "in" }).edl;
+    const fade = tracksOf(e)[0].items[0];
+    const r = applyTool(e, ctx, "adjust_lane_item", { item_id: fade.id, volume: 0.2 });
+    expect(r.result).toContain("Ignored volume");
+  });
+
+  test("clear_lane removes every zoom with its lane", () => {
+    let e = applyTool(wide(), ctx, "add_zoom", { at: 10, dur: 4, scale: 1.4 }).edl;
+    e = applyTool(e, ctx, "add_zoom", { at: 30, dur: 4, scale: 2 }).edl;
+    expect(tracksOf(applyTool(e, ctx, "clear_lane", { kind: "zoom" }).edl).length).toBe(0);
   });
 });
 
