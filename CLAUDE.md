@@ -27,10 +27,64 @@ hazard: **source time** (seconds into an original file) and **timeline time**
 src/lib/edl/       model, pure ops, coordinate queries   ← read this first
 src/lib/vcs/       commit DAG, branches, semantic diff
 src/lib/media/     OPFS store, demux probe, silence detection
-src/lib/agent/     tool schemas + dispatcher (shared client/server)
-src/app/api/agent  streaming tool loop (claude-opus-5)
+src/lib/agent/     tool schemas + dispatcher: pure functions over the document
+src/lib/ai/        bring-your-own-key: providers, the agent loop, two wires
 src/components/ui/ design primitives — compose these, don't restyle
 ```
+
+## Code style
+
+- **Comments are one line.** State the why in a single short line, or leave
+  the comment out. Reasoning that needs a paragraph belongs in this file or
+  ARCHITECTURE.md, not in the code. Older files still carry long blocks; do
+  not match them.
+
+## The agent: bring your own key
+
+Cutline is open source and ships no model access of its own. The user pastes
+a key from Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, xAI or
+DeepSeek. Keys only — there is no custom endpoint, by decision: every provider
+on the list has had its browser access checked, and an arbitrary URL cannot be.
+
+- **The loop runs in the browser; there is no server route.** The tools are
+  pure functions over the document, so nothing about an edit needs a server —
+  and without one, a key goes from the tab to its provider and nowhere else.
+  That sentence is the product's promise; do not add a proxy that breaks it.
+- **A provider is only listed if it answers a browser's CORS preflight.**
+  Every one in `PROVIDERS` was checked with a real preflight carrying the
+  headers its client sends. Adding one means checking first, not assuming.
+- **Never try a key against providers to find out whose it is.** That hands a
+  secret to companies it was not issued by. `detect()` reads the prefix; a
+  look-alike (a bare `sk-` is OpenAI or DeepSeek) becomes a choice the user
+  makes, and the button names where the key will go.
+- **Two wires, and the loop does not know which.** Anthropic goes through the
+  official SDK (`dangerouslyAllowBrowser` — the key is the user's own).
+  Everyone else speaks OpenAI chat-completions over `fetch`. Each implements
+  `Conversation` and keeps its transcript in its own shape: Anthropic's
+  thinking blocks travel back verbatim, while an OpenAI-compatible assistant
+  message is *rebuilt*, never echoed — some providers reject their own
+  reasoning traces sent back.
+- **Shape each request from what the model reports.** Adaptive thinking or
+  `effort` sent to a model without them is a 400, so Anthropic's
+  `capabilities` decide. Refusal fallbacks (`fallbacks: "default"`) go only to
+  `claude-opus-5` and `claude-fable-5-1`. After a fallback, the declining
+  model's thinking and tool calls before the boundary are dropped, and its
+  calls never run.
+- **The key lives in this browser, unencrypted, on purpose.** localStorage
+  when remembered, sessionStorage otherwise. Encrypting it next to its own
+  decryption key would be a promise the app cannot keep. It is never written
+  into the project record, and New project leaves it alone.
+- **Models are listed when the user acts** — on connect, where the listing
+  *is* the key check, and when the model dialog opens. Never on page load.
+- **One version per request; Stop applies nothing.** An aborted run throws,
+  so a half-made edit never lands. The stopped steps stay visible, struck
+  through, so it is clear what did not happen.
+- **Every failure is one of a dozen kinds** (`Failure`), each with a title and
+  a fix in the provider's own name. Classify by status *and* message: Google
+  answers a bad key with a 400, OpenAI an empty account with a 429.
+- **Test at the network edge.** Section 25e stands in for the providers with
+  `page.route`, preflight included, so the SDK, CORS and storage all run on
+  fake keys — and it checks that no key reaches any host but its own.
 
 ## Effect lanes
 
@@ -61,8 +115,8 @@ edge) covers every effect, and anything added later inherits it.
 ## Rules that are load-bearing
 
 - **Ops are pure.** Every function in `edl/ops.ts` returns a new document and
-  performs no I/O. That is what lets the same code run on the client and inside
-  the server's tool loop.
+  performs no I/O. That is what lets the agent loop call them in the browser,
+  and a test call them with a scripted model.
 - **Snap to frames.** Every op ends in `normalize()`. Without it, float drift
   makes identical edits serialise differently and the version diffs go noisy.
 - **Never commit a no-op.** `store.apply` compares against head first.
@@ -212,6 +266,17 @@ that looks dangerous.
 it the dialog pins to the top-left corner. Section 26 of the e2e asserts the
 placement, because this is invisible to every other kind of check.
 
+**Every modal composes `Dialog`**, which owns the native element, that
+margin, focus on opening, Escape and the backdrop. `ConfirmDialog` is a
+`Dialog` with two buttons; the model-and-key modal is another. A modal is for
+a task that needs protected focus, not a place to park settings.
+
+**A control inside a field keeps its corner concentric.** The composer's Send
+sits 3px inside a 10px field (1px border, 2px padding), so it is
+`IconButton nested`, at 7px — `--radius-sm`, the outer radius less the inset.
+A full circle inside a rounded box reads as two unrelated shapes. Section 25e
+measures it.
+
 **Below 860px the editor shows a wall, not a smaller editor.** Cutting means
 catching a 2px trim handle on a timeline measured in pixels per second; that
 layout does not shrink gracefully, and a phone-sized version would be a worse
@@ -328,8 +393,8 @@ missing. Errors say what went wrong and how to fix it.
 ## Verification
 
 ```bash
-bun test                    # 129 unit tests: edit algebra, effects, trim, undo, variants, DSP, agent tools
-bun test/e2e/verify.mjs     # 159 checks in real Chrome — records its own test clip
+bun test                    # 159 unit tests: edit algebra, effects, trim, undo, variants, DSP, agent tools, BYOK
+bun test/e2e/verify.mjs     # 201 checks in real Chrome — records its own test clip
 bun test/e2e/shots.mjs      # screenshots both screens for design review
 ```
 

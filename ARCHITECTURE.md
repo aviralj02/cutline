@@ -16,6 +16,7 @@ actually lives in this codebase.
   - [Storage in the browser](#storage-in-the-browser)
   - [Version control](#version-control)
   - [Interface](#interface)
+  - [Models and keys](#models-and-keys)
 - [Flows](#flows)
 - [Where everything lives](#where-everything-lives)
 - [Footguns](#footguns)
@@ -378,6 +379,11 @@ commit history, media info, waveforms. `src/lib/db.ts`.
 `getImageData()` works — which is how the tests verify that fades and zooms
 actually reach the picture.
 
+**localStorage and sessionStorage.** Small key-value stores per origin.
+localStorage survives a restart; sessionStorage ends with the tab. The API key
+lives in one or the other, depending on "Remember on this device"
+(`connection.ts`) — never in IndexedDB with the project.
+
 ### Version control
 
 **Commit.** One version of the edit: a full snapshot, a parent pointer, a
@@ -462,6 +468,57 @@ than a point.
 
 **Segmented control.** A row of mutually exclusive options sharing one
 container — speed, fade direction, aspect presets. `Segmented`.
+
+**Modal.** A panel that holds focus until it is dismissed. Cutline has three —
+New project, deleting a variant, and the model and key — all built on
+`Dialog`, the native `<dialog>` element.
+
+### Models and keys
+
+**BYOK — bring your own key.** Cutline ships no model access of its own. The
+user pastes an API key from their own account with a provider and pays that
+provider directly. Everything for it lives in `src/lib/ai/`.
+
+**Provider.** A company serving models over an API. Cutline takes keys from
+Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, xAI and DeepSeek,
+and nothing else — there is no custom endpoint. `PROVIDERS`.
+
+**API key.** The secret that authorises requests against a provider account.
+Its prefix usually names the provider — `sk-ant-` is Anthropic — which is how
+`detect()` recognises it. A key is never tried against a provider to find out
+whose it is; that would hand it to companies that did not issue it.
+
+**Model.** One named model a provider serves, such as `claude-opus-5`. Listing
+a key's models is how Cutline checks the key, and `chooseModel()` picks where
+to start from that list.
+
+**Wire format.** The shape of requests and responses on the network. Two cover
+every provider: Anthropic's Messages API, through its official SDK
+(`anthropic.ts`), and OpenAI's chat completions, which the other seven speak
+(`openai.ts`).
+
+**CORS and the preflight.** A browser blocks a page from calling another
+domain unless that domain allows it. Before a request that carries a key, the
+browser first sends an `OPTIONS` request — the *preflight* — asking whether it
+may. Every listed provider says yes, which is what lets a request go straight
+from the tab to the provider with no server in between.
+
+**Tool call.** The model asking to run one of Cutline's tools with arguments —
+`ripple_delete` from 0 to 5 seconds, say. The loop runs it through
+`applyTool()` and sends the result back.
+
+**Agent loop.** Ask the model, run the tool calls it makes, send the results
+back, and repeat until it answers without calling a tool. `runAgent()`. It
+never learns which provider it is talking to: each wire implements
+`Conversation`.
+
+**Adaptive thinking and effort.** An Anthropic model reasoning before it
+answers, and how much. Sent only to models that report supporting them —
+anything else answers a 400.
+
+**Refusal fallback.** When Anthropic's top model declines a request, the API
+re-runs it on another model inside the same call (`fallbacks: "default"`).
+What the declining model produced before the switch is not sent back.
 
 ---
 
@@ -560,21 +617,32 @@ flowchart TD
 
 ### The agent
 
-The server runs the tool loop but holds no state; the client owns the document.
+The loop runs in the browser, on the user's own key. There is no server
+between the key and the provider — the tools are pure functions over the
+document, so nothing about an edit needs one.
 
 ```mermaid
 flowchart TD
-  A[User types a request] --> B[POST /api/agent with prompt, EDL, media, silence analysis]
-  B --> C[describeState: clips, lanes, crop and pauses as readable text]
-  C --> D[Claude, with the tool schemas]
-  D --> E{stop_reason}
-  E -- tool_use --> F[applyTool: a PURE function over the EDL]
-  F --> G[Stream the step to the client]
-  G --> H[Feed all tool results back in ONE message]
-  H --> D
-  E -- end_turn --> I[Stream the final EDL]
-  I --> J[Client commits it as one version, labelled with what was asked]
+  A[User types a request] --> B[seedFor: earlier exchanges, then describeState and the request]
+  B --> C[Conversation for the connected provider]
+  C --> D{wire}
+  D -- anthropic --> E[Official SDK from the browser; thinking, effort and fallbacks per the model's capabilities]
+  D -- openai --> F[fetch chat/completions: OpenAI, Gemini, OpenRouter, Groq, Mistral, xAI, DeepSeek]
+  E --> G{how the turn ended}
+  F --> G
+  G -- tools --> H[applyTool: a PURE function over the EDL]
+  H --> I[Show the step as it happens]
+  I --> J[All results back in ONE reply]
+  J --> C
+  G -- done --> K[Commit once, labelled with what was asked]
+  G -- stopped by the user --> L[Discard: nothing is applied]
 ```
+
+**Connecting a key.** `detect()` reads the provider from the key's prefix; a
+look-alike becomes a choice, never a probe. Listing the provider's models is
+the key check and picks the starting model (`chooseModel`). The connection is
+kept in this browser — localStorage if remembered, sessionStorage if not —
+and never in the project.
 
 ### Silence to cut
 
@@ -605,16 +673,22 @@ src/lib/edl/ops.ts        pure operations; each returns a new document
 src/lib/vcs/repo.ts       commits, branches, semantic diff
 src/lib/media/opfs.ts     media bytes on disk
 src/lib/media/analyze.ts  demux probe, loudness, silence, waveform, WAV
-src/lib/agent/tools.ts    tool schemas and dispatcher, shared client/server
+src/lib/agent/tools.ts    tool schemas and dispatcher — pure, no I/O
+src/lib/ai/agent.ts       the agent loop, with the model behind an interface
+src/lib/ai/anthropic.ts   the Anthropic wire, through the official SDK
+src/lib/ai/openai.ts      the OpenAI-compatible wire everyone else speaks
+src/lib/ai/providers.ts   the provider registry, and reading a key's provider
+src/lib/ai/session.ts     the connection as app state; connection.ts stores it
 src/lib/store.ts          app state, draft coalescing, the agent request
 src/lib/db.ts             project persistence
-src/app/api/agent/        the streaming tool loop
 src/components/           Preview, Timeline, Transport, inspectors, overlays
+src/components/ai/        the key card and the model-and-key modal
 src/components/ui/        design primitives — compose these, don't restyle
 ```
 
 Nothing under `lib/edl` imports React or performs I/O. That is what lets the
-same operations run in the browser and inside the server's tool loop.
+agent's tools be plain functions the loop calls in the browser, and a test
+calls with a scripted model.
 
 ---
 

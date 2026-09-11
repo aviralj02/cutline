@@ -38,9 +38,10 @@ readable.
 
 ```bash
 bun install
-cp .env.example .env.local     # optional — only the agent panel needs a key
 bun dev
 ```
+
+No environment file. To use the agent, paste an API key into the Ask panel.
 
 Drop in an MP4 or WebM. Import runs locally: a Mediabunny demux to read the file's
 real parameters, an OPFS write, an audio decode, and silence detection.
@@ -62,14 +63,28 @@ Cutline analyses the audio and hands the model a description of the content:
 
 That's what makes "cut all the silences" a real request rather than a guess.
 
+## Bring your own key
+
+Cutline ships no model access of its own. Paste a key from **Anthropic,
+OpenAI, Google Gemini, OpenRouter, Groq, Mistral, xAI or DeepSeek**. The
+provider is read from the key itself.
+
+- **Your key goes from your browser to your provider, and nowhere else.** The
+  agent loop runs in the page; there is no Cutline server in between. Every
+  listed provider accepts requests straight from a browser.
+- **It stays in this browser.** Remembered on this device by default, or kept
+  only until the tab closes. Never saved with a project.
+- **Pick any model the key can use.** Cutline starts on the best one for
+  editing — Claude Opus 5 on an Anthropic key — and lists the rest.
+
 ## Layout
 
 ```
 src/lib/edl/       types, pure operations, coordinate queries   ← the core
 src/lib/vcs/       commit DAG, branches, semantic diff
 src/lib/media/     OPFS store, audio analysis, silence detection
-src/lib/agent/     tool schemas + dispatcher (shared client/server)
-src/app/api/agent  streaming tool loop (Claude Opus 5)
+src/lib/agent/     tool schemas + dispatcher: pure functions over the edit
+src/lib/ai/        bring-your-own-key: providers, the agent loop, two wires
 src/components/    preview + playback, timeline, chat, history
 ```
 
@@ -80,8 +95,8 @@ the edit). `query.ts` owns the conversions.
 ## Tests
 
 ```bash
-bun test                    # 48 unit tests: edit algebra, silence DSP, agent tools
-bun test/e2e/verify.mjs     # end-to-end in real Chrome — records its own test video
+bun test                    # 159 unit tests: edit algebra, silence DSP, agent tools, BYOK
+bun test/e2e/verify.mjs     # 201 checks in real Chrome — records its own test video
 ```
 
 The e2e script generates a 20-second clip with two deliberate silent stretches using
