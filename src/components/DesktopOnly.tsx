@@ -3,8 +3,15 @@
 import { useEffect, useState } from "react";
 import { Logo } from "@/components/ui";
 
-
-export const MIN_WIDTH = 1024;
+/**
+ * The narrowest window the editor claims to work at. Measured, not a
+ * breakpoint: at 860 nothing spills out of its row, no click is stolen by the
+ * floating transport, ruler labels keep their spacing, and the timeline
+ * toolbar still has 51px to spare with a clip selected. It also admits half
+ * of a 1728px laptop screen (864px), the usual side-by-side layout. The e2e's
+ * `FLOOR` must match it.
+ */
+export const MIN_WIDTH = 860;
 
 /**
  * The window's width, or 0 before it has been measured.

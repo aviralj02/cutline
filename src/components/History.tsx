@@ -4,7 +4,9 @@ import { useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import * as vcs from "@/lib/vcs/repo";
 import { fmt } from "@/lib/edl/query";
-import { BranchIcon, Button, Chip, PanelHeader, Timecode, UndoIcon } from "@/components/ui";
+import {
+  BranchIcon, Button, Chip, ConfirmDialog, IconButton, PanelHeader, Timecode, TrashIcon, UndoIcon,
+} from "@/components/ui";
 
 const ago = (t: number) => {
   const s = Math.floor((Date.now() - t) / 1000);
@@ -19,14 +21,21 @@ export default function History() {
   const restore = useStore((s) => s.restore);
   const branch = useStore((s) => s.branch);
   const switchBranch = useStore((s) => s.switchBranch);
+  const deleteBranch = useStore((s) => s.deleteBranch);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const commits = useMemo(() => (repo ? vcs.log(repo) : []), [repo]);
   if (!repo) return null;
 
   const headId = repo.branches[repo.current];
   const branches = Object.keys(repo.branches);
+  // What deleting the variant on screen would cost, and where it would leave
+  // you — asked of the same function that does the deleting, so the dialog
+  // cannot promise something the delete does not do.
+  const lost = vcs.onlyOn(repo, repo.current);
+  const landsOn = branches.length > 1 ? vcs.deleteBranch(repo, repo.current).current : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col border-t border-edge">
@@ -39,7 +48,51 @@ export default function History() {
         >
           Variant
         </Button>
+        {/* Only while another variant remains: the last one cannot go. */}
+        {landsOn && (
+          <IconButton
+            variant="danger"
+            label="Delete this variant"
+            icon={<TrashIcon size={14} />}
+            onClick={() => setConfirmingDelete(true)}
+          />
+        )}
       </PanelHeader>
+
+      {/* Not a commit, so undo cannot bring it back — which is what earns it
+          a confirmation, like New project and nothing else. */}
+      <ConfirmDialog
+        open={confirmingDelete}
+        title={`Delete the “${repo.current}” variant?`}
+        confirmLabel="Delete variant"
+        cancelLabel="Keep it"
+        onCancel={() => setConfirmingDelete(false)}
+        onConfirm={() => {
+          setConfirmingDelete(false);
+          deleteBranch(repo.current);
+        }}
+        body={
+          <>
+            <p>
+              {lost ? (
+                <>
+                  This permanently deletes{" "}
+                  <strong className="font-medium text-ink">
+                    {lost} version{lost === 1 ? "" : "s"}
+                  </strong>{" "}
+                  that {lost === 1 ? "exists" : "exist"} only on this variant.
+                </>
+              ) : (
+                <>Every version on this variant is also on another, so only its name goes.</>
+              )}
+            </p>
+            <p className="mt-2">
+              You will switch to <strong className="font-medium text-ink">{landsOn}</strong>. Undo
+              cannot bring it back.
+            </p>
+          </>
+        }
+      />
 
       {branches.length > 1 && (
         <div className="flex flex-wrap gap-1 border-b border-edge px-3 py-2">

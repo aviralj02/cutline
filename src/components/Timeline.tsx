@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, useEdl } from "@/lib/store";
 import { dropSlot, duration, fmt, isFade, placed, tracksOf } from "@/lib/edl/query";
 import {
-  addEffect, addTrack, deleteClip, makeEffect, moveClip, moveEffect, removeTrack,
-  setSpeed, splitAt, trimClipEdge, trimEffect,
+  addEffect, addTrack, deleteClip, makeEffect, moveClip, moveEffect, removeEffect,
+  removeTrack, setSpeed, splitAt, trackOfEffect, trimClipEdge, trimEffect,
 } from "@/lib/edl/ops";
 import type { Effect, TrackKind } from "@/lib/edl/types";
 import EffectInspector from "./EffectInspector";
@@ -98,16 +98,25 @@ export default function Timeline() {
   }, [waveforms]);
 
   const lanesRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<HTMLDivElement | null>(null);
   const [viewW, setViewW] = useState(0);
-  useEffect(() => {
-    const el = viewRef.current;
-    if (!el) return;
+  /**
+   * Measured on whichever scroller is mounted, not on the first one. An empty
+   * track swaps the scroller for a placeholder, so deleting every clip
+   * unmounts it; an observer attached once on mount went on watching the
+   * detached element, read its width as 0, and the footage came back from an
+   * undo or a restore drawn 120px wide.
+   */
+  const attachView = useCallback((el: HTMLDivElement) => {
+    viewRef.current = el;
     const read = () => setViewW(Math.max(0, el.clientWidth - GUTTER));
     read();
     const ro = new ResizeObserver(read);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      viewRef.current = null;
+    };
   }, []);
 
   /**
@@ -193,9 +202,18 @@ export default function Timeline() {
     () => apply(splitAt(edl, playhead), `Split at ${fmt(playhead)}`),
     [apply, edl, playhead],
   );
+  // Delete means "the selection", whichever kind it is. Selection is
+  // exclusive, so there is never a question of which one goes.
   const removeSelected = useCallback(() => {
-    if (selected) apply(deleteClip(edl, selected), "Delete clip");
-  }, [apply, edl, selected]);
+    if (selected) {
+      apply(deleteClip(edl, selected), "Delete clip");
+      return;
+    }
+    const track = selectedEffect ? trackOfEffect(edl, selectedEffect) : null;
+    if (!selectedEffect || !track) return;
+    selectEffect(null);
+    apply(removeEffect(edl, selectedEffect), `Remove ${track.name.toLowerCase()}`);
+  }, [apply, edl, selected, selectedEffect, selectEffect]);
 
   const selectedClip = edl.clips.find((c) => c.id === selected) ?? null;
   const speed = selectedClip?.speed ?? 1;
@@ -215,21 +233,21 @@ export default function Timeline() {
    * the same event is still being dispatched*. A listener removed mid-dispatch
    * is never called, so the key reached the transport and stopped there.
    */
-  const keys = useRef({ split, removeSelected, selected, apply, edl });
+  const keys = useRef({ split, removeSelected, selected, selectedEffect, apply, edl });
   useEffect(() => {
-    keys.current = { split, removeSelected, selected, apply, edl };
+    keys.current = { split, removeSelected, selected, selectedEffect, apply, edl };
   });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { split, removeSelected, selected, apply, edl } = keys.current;
+      const { split, removeSelected, selected, selectedEffect, apply, edl } = keys.current;
       const el = e.target as HTMLElement | null;
       if (el && ["INPUT", "TEXTAREA"].includes(el.tagName)) return;
       if (e.key === "s" || e.key === "S") {
         e.preventDefault();
         split();
       }
-      if ((e.key === "Backspace" || e.key === "Delete") && selected) {
+      if ((e.key === "Backspace" || e.key === "Delete") && (selected || selectedEffect)) {
         e.preventDefault();
         removeSelected();
       }
@@ -535,7 +553,9 @@ export default function Timeline() {
   );
 
   return (
-    <div className="overflow-hidden rounded-panel border border-edge bg-panel shadow-[0_1px_3px_rgba(0,0,0,.35)]">
+    // Nothing here is text to copy; every surface is a drag target, and a
+    // sweep that starts on a label painted the whole card as a selection.
+    <div className="select-none overflow-hidden rounded-panel border border-edge bg-panel shadow-[0_1px_3px_rgba(0,0,0,.35)]">
       <div className="flex h-12 items-center gap-1 border-b border-edge px-3.5">
         <h2 className="text-[13px] font-semibold tracking-[-.01em] text-ink">Timeline</h2>
         <span className="ml-2 text-[12px] text-ink-3">
@@ -563,8 +583,8 @@ export default function Timeline() {
             variant="danger"
             onClick={removeSelected}
             icon={<TrashIcon />}
-            disabled={!selected}
-            title="Delete the selected clip and close the gap (Backspace)"
+            disabled={!selected && !selectedEffect}
+            title="Delete the selected clip or effect (Backspace)"
           >
             Delete <Kbd><BackspaceIcon size={11} /></Kbd>
           </Button>
@@ -583,7 +603,7 @@ export default function Timeline() {
                 than outside it — a second element scrolled in sympathy
                 drifts by a pixel and the drift is visible on a hairline. */}
             <div
-              ref={viewRef}
+              ref={attachView}
               onScroll={(e) => setScrollX(e.currentTarget.scrollLeft)}
               className="overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             >

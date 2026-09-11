@@ -48,7 +48,7 @@ export default function Transport() {
   const atEnd = total > 0 && playhead >= total - 0.001;
 
   return (
-    <div className="flex items-center gap-1 rounded-full border border-edge bg-raised/95 py-1 pl-2 pr-3 shadow-[0_6px_20px_rgba(0,0,0,.45)] backdrop-blur">
+    <div className="flex select-none items-center gap-1 rounded-full border border-edge bg-raised/95 py-1 pl-2 pr-3 shadow-[0_6px_20px_rgba(0,0,0,.45)] backdrop-blur">
       <IconButton
         label="Go to start"
         icon={<StartIcon size={14} />}
