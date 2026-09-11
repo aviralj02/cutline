@@ -662,3 +662,9 @@ Each of these was a real bug here, not a hypothetical.
     components both listening on `window`, the first one changing state, and
     the second one's shortcut is dead — silently, and only for the keys the
     first component also handles.
+15. **Measuring an element once, on mount, when it can be swapped out.** An
+    empty track replaces the timeline's scroller with a placeholder. The
+    `ResizeObserver` attached in a `[]` effect kept watching the detached
+    element, read its width as 0, and every undo or restore after deleting
+    the last clip drew the footage 120px wide. Attach through a callback ref,
+    so the observer follows whichever element is actually mounted.

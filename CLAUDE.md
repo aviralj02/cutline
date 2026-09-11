@@ -191,14 +191,18 @@ every surface, and every control answers a press with a small scale-down.
 `left-2/5` from `xl` up, where it is measured clear of the toolbar, and drops
 into flow below that — the toolbar grows leftward when a clip is selected and
 starts swallowing clicks meant for the speed control at around 1100px. Section
-23 of the e2e checks, at five widths, that nothing under the panel loses its
-clicks. Verify a floating panel by measurement, not by looking at one width:
+23 of the e2e checks, at every width down to the floor, that nothing under the
+panel loses its clicks and nothing spills out of its row. Verify a floating
+panel by measurement, not by looking at one width:
 this read as "always broken" from a single narrow-window failure when it was
 in fact fine at every size anyone works at.
 
 **Confirm only what cannot be undone.** Everything in this app is undoable
-except `reset()`, which clears IndexedDB and OPFS outright — so that is the one
-action behind a `ConfirmDialog`. Say what is at stake (how many versions, how
+except two things, and they are the only actions behind a `ConfirmDialog`:
+`reset()`, which clears IndexedDB and OPFS outright, and deleting a variant,
+which is not a commit and so leaves undo nothing to step back over — it takes
+the versions only that variant reached with it (`vcs.onlyOn` counts them for
+the dialog). Say what is at stake (how many versions, how
 many files) rather than asking "are you sure", put focus on the safe choice,
 and use the filled `destructive` variant so the dangerous button is the one
 that looks dangerous.
@@ -208,13 +212,15 @@ that looks dangerous.
 it the dialog pins to the top-left corner. Section 26 of the e2e asserts the
 placement, because this is invisible to every other kind of check.
 
-**Below 1024px the editor shows a wall, not a smaller editor.** Cutting means
+**Below 860px the editor shows a wall, not a smaller editor.** Cutting means
 catching a 2px trim handle on a timeline measured in pixels per second; that
 layout does not shrink gracefully, and a phone-sized version would be a worse
 promise than an honest one. `DesktopOnly` states the window's own width
 against the width needed, in the mono face the app uses for every other
-measurement. `MIN_WIDTH` is Tailwind's `lg`, not `md`: everything still fits
-at 768, but only just, and the e2e's narrowest measurements now run at the
+measurement. `MIN_WIDTH` is measured, not a breakpoint: at 860 nothing spills
+out of its row, no click is stolen, and the timeline toolbar keeps 51px to
+spare with a clip selected — and it admits half a 1728px laptop screen. The
+e2e's `FLOOR` constant must match it, so its narrowest measurements run at the
 floor the product actually claims. Gate on a width measured after mount, never during render — the
 server has no window and a tree that differs between the two is a hydration
 error.
@@ -322,8 +328,8 @@ missing. Errors say what went wrong and how to fix it.
 ## Verification
 
 ```bash
-bun test                    # 121 unit tests: edit algebra, effects, trim, undo, DSP, agent tools
-bun test/e2e/verify.mjs     # 119 checks in real Chrome — records its own test clip
+bun test                    # 129 unit tests: edit algebra, effects, trim, undo, variants, DSP, agent tools
+bun test/e2e/verify.mjs     # 159 checks in real Chrome — records its own test clip
 bun test/e2e/shots.mjs      # screenshots both screens for design review
 ```
 
