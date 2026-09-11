@@ -68,7 +68,8 @@ export function IconButton({
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   label: string;
   icon: ReactNode;
-  variant?: "quiet" | "primary";
+  /** `danger` is grease-pencil red on hover, only where something is removed. */
+  variant?: "quiet" | "primary" | "danger";
   active?: boolean;
   /** Transport controls are circular, the way every player's are. */
   round?: boolean;
@@ -76,7 +77,9 @@ export function IconButton({
   const tone =
     variant === "primary"
       ? "bg-leader text-black shadow-[0_1px_3px_rgba(0,0,0,.35)] hover:bg-[#f2bf46]"
-      : active
+      : variant === "danger"
+        ? "text-ink-2 hover:bg-grease/15 hover:text-grease"
+        : active
         ? "bg-white/[.09] text-ink"
         : "text-ink-2 hover:bg-white/[.07] hover:text-ink";
 

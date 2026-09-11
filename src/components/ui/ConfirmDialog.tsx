@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Button } from "./Button";
 
 /**
@@ -30,6 +30,9 @@ export function ConfirmDialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const safeRef = useRef<HTMLButtonElement>(null);
+  // More than one dialog can be mounted at once; a fixed id would name every
+  // one of them by the first one's title.
+  const titleId = useId();
 
   useEffect(() => {
     const el = ref.current;
@@ -45,7 +48,7 @@ export function ConfirmDialog({
   return (
     <dialog
       ref={ref}
-      aria-labelledby="confirm-title"
+      aria-labelledby={titleId}
       onCancel={(e) => {
         // Escape and the backdrop both mean "no".
         e.preventDefault();
@@ -61,7 +64,7 @@ export function ConfirmDialog({
                  shadow-[0_24px_60px_rgba(0,0,0,.6)] backdrop:bg-black/55 backdrop:backdrop-blur-[2px]"
     >
       <div className="p-4">
-        <h2 id="confirm-title" className="text-[14px] font-semibold tracking-[-.01em] text-ink">
+        <h2 id={titleId} className="text-[14px] font-semibold tracking-[-.01em] text-ink">
           {title}
         </h2>
         <div className="mt-1.5 text-[12.5px] leading-relaxed text-ink-2">{body}</div>

@@ -13,8 +13,10 @@ export function PanelHeader({
 }) {
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
-      <h2 className="text-[13px] font-semibold tracking-[-.01em] text-ink">{title}</h2>
-      <div className="ml-auto flex items-center gap-1">{children}</div>
+      <h2 className="shrink-0 text-[13px] font-semibold tracking-[-.01em] text-ink">{title}</h2>
+      {/* min-w-0 lets a chip in here give way before anything spills out of
+          a narrow rail. */}
+      <div className="ml-auto flex min-w-0 items-center gap-1">{children}</div>
     </div>
   );
 }
@@ -23,7 +25,12 @@ export function Panel({ children, className = "" }: { children: ReactNode; class
   return <section className={`flex min-h-0 flex-col bg-panel ${className}`}>{children}</section>;
 }
 
-/** Small status marker. The only pill in the system. */
+/**
+ * Small status marker. The only pill in the system.
+ *
+ * One line, always: squeezed, it truncates rather than wrapping. A variant
+ * name wrapped to three lines in the 290px rail and spilled out of the header.
+ */
 export function Chip({
   children,
   tone = "neutral",
@@ -36,8 +43,8 @@ export function Chip({
     leader: "bg-leader/15 text-leader",
   };
   return (
-    <span className={`inline-flex items-center rounded-full px-2 py-[3px] text-[11px] font-medium ${tones[tone]}`}>
-      {children}
+    <span className={`inline-flex min-w-0 max-w-full items-center rounded-full px-2 py-[3px] text-[11px] font-medium ${tones[tone]}`}>
+      <span className="truncate">{children}</span>
     </span>
   );
 }
