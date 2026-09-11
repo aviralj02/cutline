@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ChevronIcon } from "./Icon";
 
 /**
  * Panel headings are sentence case at text size — not tracked-out capitals.
@@ -7,15 +8,41 @@ import type { ReactNode } from "react";
 export function PanelHeader({
   title,
   children,
+  open,
+  onToggle,
+  controls,
 }: {
   title: string;
   children?: ReactNode;
+  /** With onToggle, the heading folds the panel; a folded panel is just this row. */
+  open?: boolean;
+  onToggle?: () => void;
+  /** Id of the region the heading folds. */
+  controls?: string;
 }) {
+  const heading = "text-[13px] font-semibold tracking-[-.01em] text-ink";
   return (
-    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
-      <h2 className="shrink-0 text-[13px] font-semibold tracking-[-.01em] text-ink">{title}</h2>
-      {/* min-w-0 lets a chip in here give way before anything spills out of
-          a narrow rail. */}
+    <div className={`flex h-10 shrink-0 items-center gap-2 px-3 ${open === false ? "" : "border-b border-edge"}`}>
+      <h2 className="shrink-0">
+        {onToggle ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            aria-controls={controls}
+            className={`-ml-1.5 flex h-8 items-center gap-1 rounded-ctl px-1.5 transition-[background-color,transform] duration-150 hover:bg-white/[.07] active:scale-[.97] ${heading}`}
+          >
+            <ChevronIcon
+              size={13}
+              className={`text-ink-3 transition-transform duration-150 ${open ? "" : "-rotate-90"}`}
+            />
+            {title}
+          </button>
+        ) : (
+          <span className={heading}>{title}</span>
+        )}
+      </h2>
+      {/* min-w-0 lets a chip give way before anything spills out of a narrow rail. */}
       <div className="ml-auto flex min-w-0 items-center gap-1">{children}</div>
     </div>
   );

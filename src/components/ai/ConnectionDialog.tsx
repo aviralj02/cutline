@@ -3,7 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAi } from "@/lib/ai/session";
 import { maskKey, PROVIDERS } from "@/lib/ai/providers";
-import { Button, CheckIcon, Dialog, SearchIcon, WorkingIcon } from "@/components/ui";
+import { Button, CheckIcon, Checkbox, Dialog, SearchIcon, WorkingIcon } from "@/components/ui";
 
 /** Model and key modal: the search leads and picking closes; the key sits in the footer band. */
 export default function ConnectionDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -143,21 +143,14 @@ export default function ConnectionDialog({ open, onClose }: { open: boolean; onC
         )}
       </div>
 
-      <div className="flex items-center gap-3 border-t border-edge bg-white/[.02] px-4 py-3">
-        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
-          <input
-            type="checkbox"
-            checked={conn.remember}
-            onChange={(e) => setRemember(e.target.checked)}
-            className="mt-[3px] h-3.5 w-3.5 shrink-0 accent-leader"
-          />
-          <span className="min-w-0">
-            <span className="block text-[12.5px] text-ink">Remember on this device</span>
-            <span className="block text-[11.5px] leading-relaxed text-ink-3">
-              {conn.remember ? "Kept in this browser until you forget it." : "Forgotten when this tab closes."}
-            </span>
-          </span>
-        </label>
+      <div className="flex items-center gap-3 border-t border-edge bg-white/[.02] px-4 py-1.5">
+        <Checkbox
+          checked={conn.remember}
+          onChange={setRemember}
+          label="Remember on this device"
+          hint={conn.remember ? "Kept in this browser until you forget it." : "Forgotten when this tab closes."}
+          className="min-w-0 flex-1"
+        />
         <Button
           variant="danger"
           title="Remove the key from this browser"

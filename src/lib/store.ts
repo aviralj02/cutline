@@ -84,6 +84,8 @@ interface State {
     info: MediaInfo;
     silences: Array<[number, number]>;
     wave: number[];
+    /** It has audio, but the audio could not be analysed. */
+    unheard: boolean;
   }>;
   importFile: (file: File) => Promise<void>;
   apply: (edl: Edl, message: string, author?: Author) => void;
@@ -188,6 +190,7 @@ export const useStore = create<State>((set, get) => ({
 
     let silences: Array<[number, number]> = [];
     let wave: number[] = [];
+    let unheard = false;
     if (meta.hasAudio) {
       const pct = (f: number) => set({ status: `Analysing audio… ${Math.round(f * 100)}%` });
       try {
@@ -200,21 +203,20 @@ export const useStore = create<State>((set, get) => ({
           wave = Array.from(sum.wave);
         }
       } catch {
-        // A codec WebCodecs will not decode can still go through the Web Audio
-        // decoder, which reads the whole track at once — so it is the fallback
-        // and not the default.
+        // Codecs WebCodecs won't decode go through Web Audio, which holds the whole file, so it's capped.
         try {
           set({ status: "Analysing audio…" });
           const audio = await decodeAudio(file);
           silences = detectSilences(audio, { minSilence: 0.2, padding: 0 }).ranges;
           wave = Array.from(waveform(audio, 1600));
         } catch {
+          unheard = true;
           set({ status: "Audio could not be read — continuing without silence analysis." });
         }
       }
     }
     const info: MediaInfo = { id, name: file.name, duration: meta.duration };
-    return { id, meta, info, silences, wave };
+    return { id, meta, info, silences, wave, unheard };
   },
 
   async importFile(file) {
@@ -224,7 +226,7 @@ export const useStore = create<State>((set, get) => ({
       // map that makes the agent useful, so it happens once here rather than
       // on every request, and reports progress because a long file otherwise
       // looks like a hung tab.
-      const { id, meta, info, silences, wave } = await get().analyzeFile(file);
+      const { id, meta, info, silences, wave, unheard } = await get().analyzeFile(file);
 
       const edl = insertClip(
         emptyEdl(meta.fps, meta.width || 1920, meta.height || 1080),
@@ -247,7 +249,9 @@ export const useStore = create<State>((set, get) => ({
             role: "system",
             text: silences.length
               ? `Imported ${file.name}. Found ${silences.length} pauses totalling ${removable.toFixed(1)}s that could be cut.`
-              : `Imported ${file.name}.`,
+              : unheard
+                ? `Imported ${file.name}. Its audio couldn't be analysed here, so there are no pauses to cut.`
+                : `Imported ${file.name}.`,
           },
         ],
       }));
@@ -309,7 +313,7 @@ export const useStore = create<State>((set, get) => ({
     if (!repo) return;
     set({ status: `Adding ${file.name}…`, busy: true });
     try {
-      const { id, meta, info, silences, wave } = await get().analyzeFile(file);
+      const { id, meta, info, silences, wave, unheard } = await get().analyzeFile(file);
       // Append to the primary track. The composition frame stays as the first
       // file set it, so a differently shaped clip letterboxes rather than
       // resizing the whole project underneath the edit.
@@ -327,7 +331,9 @@ export const useStore = create<State>((set, get) => ({
             role: "system",
             text: silences.length
               ? `Added ${file.name}. Found ${silences.length} more pauses that could be cut.`
-              : `Added ${file.name}.`,
+              : unheard
+                ? `Added ${file.name}. Its audio couldn't be analysed here, so it has no pauses to cut.`
+                : `Added ${file.name}.`,
           },
         ],
       }));

@@ -2,7 +2,8 @@ import { expect, test, describe } from "bun:test";
 import {
   detectSilences, silencesFromLoudness, waveform, toWav16k, type AudioAnalysis,
 } from "../src/lib/media/analyze";
-import { MAX_FILE_BYTES, humanBytes } from "../src/lib/media/opfs";
+import { MAX_FILE_BYTES, checkRoom, humanBytes } from "../src/lib/media/opfs";
+import { decodeAudio, WHOLE_DECODE_MAX_BYTES } from "../src/lib/media/analyze";
 
 const SR = 16000;
 
@@ -152,15 +153,32 @@ describe("silencesFromLoudness", () => {
   });
 });
 
+describe("import limits", () => {
+  test("a file over the cap is refused with its size, the cap and a fix", async () => {
+    const msg = await checkRoom({ name: "long.mp4", size: 5 * 1024 ** 3 } as File);
+    expect(msg).toContain("5 GB");
+    expect(msg).toContain("4 GB");
+    expect(msg).toContain("compress");
+  });
+
+  test("the whole-file audio fallback refuses a file too big to hold in memory", async () => {
+    // Refused before the file is read, so a huge file never reaches arrayBuffer().
+    const read = () => { throw new Error("read the file"); };
+    const big = { size: WHOLE_DECODE_MAX_BYTES + 1, arrayBuffer: read } as unknown as File;
+    await expect(decodeAudio(big)).rejects.toThrow("Too large");
+  });
+});
+
 describe("humanBytes", () => {
   test("reads as a person would say it", () => {
     expect(humanBytes(512)).toBe("512 B");
     expect(humanBytes(1024)).toBe("1 KB");
     expect(humanBytes(16 * 1024 ** 3)).toBe("16 GB");
     expect(humanBytes(2.5 * 1024 ** 3)).toBe("2.5 GB");
+    expect(humanBytes(4 * 1024 ** 3)).toBe("4 GB");
   });
 
   test("the import ceiling is stated in whole units", () => {
-    expect(humanBytes(MAX_FILE_BYTES)).toBe("16 GB");
+    expect(humanBytes(MAX_FILE_BYTES)).toBe("4 GB");
   });
 });

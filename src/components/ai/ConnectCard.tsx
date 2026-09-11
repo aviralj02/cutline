@@ -2,8 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { useAi } from "@/lib/ai/session";
-import { cleanKey, detect, LISTED, PROVIDERS, type ProviderId } from "@/lib/ai/providers";
-import { Button, KeyIcon, Segmented, WorkingIcon } from "@/components/ui";
+import {
+  cleanKey,
+  detect,
+  LISTED,
+  PROVIDERS,
+  type ProviderId,
+} from "@/lib/ai/providers";
+import { Button, Checkbox, KeyIcon, Segmented, WorkingIcon } from "@/components/ui";
 
 /** Key entry in the composer's slot, which the composer takes over on connect. */
 export default function ConnectCard() {
@@ -59,10 +65,14 @@ export default function ConnectCard() {
           spellCheck={false}
           data-1p-ignore
           data-lpignore="true"
-          className="min-w-0 flex-1 bg-transparent font-mono text-[12.5px] text-ink outline-none placeholder:font-sans placeholder:text-[13px] placeholder:text-ink-3"
+          className="min-w-0 flex-1 bg-transparent rounded-none font-mono text-[12.5px] text-ink outline-none placeholder:font-sans placeholder:text-[13px] placeholder:text-ink-3"
         />
         {found.sure && name && (
-          <span key={name} className="rise-in shrink-0 text-[11.5px] text-ink-2" aria-live="polite">
+          <span
+            key={name}
+            className="rise-in shrink-0 text-[11.5px] text-ink-2"
+            aria-live="polite"
+          >
             {name}
           </span>
         )}
@@ -102,7 +112,11 @@ export default function ConnectCard() {
           icon={checking ? <WorkingIcon size={14} /> : undefined}
           className="rise-in mt-2 w-full"
         >
-          {checking ? "Checking the key" : name ? `Connect to ${name}` : "Connect"}
+          {checking
+            ? "Checking the key"
+            : name
+              ? `Connect to ${name}`
+              : "Connect"}
         </Button>
       )}
 
@@ -113,19 +127,11 @@ export default function ConnectCard() {
         </div>
       )}
 
-      <label className="mt-2.5 flex w-fit cursor-pointer items-center gap-1.5 text-[12px] text-ink-2">
-        <input
-          type="checkbox"
-          checked={remember}
-          onChange={(e) => setRemember(e.target.checked)}
-          className="h-3.5 w-3.5 accent-leader"
-        />
-        Remember on this device
-      </label>
+      <Checkbox checked={remember} onChange={setRemember} label="Remember on this device" className="mt-1 w-fit" />
 
       <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-3">
-        Your key stays in this browser and goes straight to {name ?? "the provider"}. Cutline has no
-        server in between.
+        Your key stays in this browser and goes straight to{" "}
+        {name ?? "the provider"}. Cutline has no server in between.
         {name && provider && (
           <>
             {" "}

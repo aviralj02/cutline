@@ -130,6 +130,27 @@ export default function Page() {
   const edl = edlOf(repo);
   const canUndo = !!repo && vcs.canUndo(repo);
   const [confirmingReset, setConfirmingReset] = useState(false);
+
+  // Which rail panels are open: a per-viewer convenience, remembered in this browser.
+  const [rail, setRail] = useState({ ask: true, versions: true });
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("cutline.rail") ?? "null") as Record<string, unknown> | null;
+      if (saved) setRail({ ask: saved.ask !== false, versions: saved.versions !== false });
+    } catch {
+      /* storage blocked; both stay open */
+    }
+  }, []);
+  const fold = (panel: "ask" | "versions") =>
+    setRail((r) => {
+      const next = { ...r, [panel]: !r[panel] };
+      try {
+        localStorage.setItem("cutline.rail", JSON.stringify(next));
+      } catch {
+        /* not remembered, still folds */
+      }
+      return next;
+    });
   const windowWidth = useWindowWidth();
 
   // Name what is actually at stake, rather than asking "are you sure?".
@@ -254,8 +275,8 @@ export default function Page() {
             </div>
           </section>
           <aside className="flex w-[290px] shrink-0 flex-col border-l border-edge bg-panel xl:w-[340px]">
-            <Chat />
-            <History />
+            <Chat open={rail.ask} onToggle={() => fold("ask")} />
+            <History open={rail.versions} onToggle={() => fold("versions")} />
           </aside>
         </main>
       )}

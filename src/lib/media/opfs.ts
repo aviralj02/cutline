@@ -1,19 +1,8 @@
-/**
- * Media lives in the Origin Private File System: on the user's disk, in the
- * browser's sandbox. Nothing uploads, so import is instant regardless of file
- * size and a multi-gigabyte source costs nothing to host — the only ceiling is
- * the origin's storage quota, which `checkRoom` asks about before an import
- * starts rather than failing halfway through one.
- */
+/** Media lives in OPFS, on disk in the browser's sandbox: nothing uploads, and checkRoom asks about space first. */
 const DIR = "media";
 
-/**
- * The ceiling on a single import. It is deliberately far above what anyone
- * drops into a browser editor: nothing here reads the file into memory — it is
- * written to disk as a stream and analysed in chunks — so the number exists
- * only so that a 40GB drop fails with a sentence instead of a stalled tab.
- */
-export const MAX_FILE_BYTES = 16 * 1024 ** 3;
+/** Per-file import cap, sized for everyday phone and screen footage; import streams, so memory isn't what it guards. */
+export const MAX_FILE_BYTES = 4 * 1024 ** 3;
 
 export const humanBytes = (n: number): string => {
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -22,7 +11,7 @@ export const humanBytes = (n: number): string => {
     n /= 1024;
     i++;
   }
-  return `${n < 10 && i > 1 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+  return `${n < 10 && i > 1 ? n.toFixed(1).replace(/\.0$/, "") : Math.round(n)} ${units[i]}`;
 };
 
 async function dir() {
@@ -40,7 +29,7 @@ export const opfsSupported = () =>
  */
 export async function checkRoom(file: File): Promise<string | null> {
   if (file.size > MAX_FILE_BYTES) {
-    return `${file.name} is ${humanBytes(file.size)}. The limit is ${humanBytes(MAX_FILE_BYTES)}.`;
+    return `${file.name} is ${humanBytes(file.size)}. Cutline takes files up to ${humanBytes(MAX_FILE_BYTES)}; trim or compress it first.`;
   }
   try {
     const { used, quota } = await usage();

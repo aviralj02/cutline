@@ -16,8 +16,12 @@ export interface AudioAnalysis {
   duration: number;
 }
 
+/** The fallback below reads the whole file into memory, so it only runs on files up to this size. */
+export const WHOLE_DECODE_MAX_BYTES = 500 * 1024 ** 2;
+
 /** Decode a video/audio file's audio track to mono PCM. */
 export async function decodeAudio(file: File): Promise<AudioAnalysis> {
+  if (file.size > WHOLE_DECODE_MAX_BYTES) throw new Error("Too large to decode in one piece.");
   const Ctx: typeof AudioContext =
     window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const ctx = new Ctx();

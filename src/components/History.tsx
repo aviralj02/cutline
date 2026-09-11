@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import * as vcs from "@/lib/vcs/repo";
 import { fmt } from "@/lib/edl/query";
@@ -16,7 +16,8 @@ const ago = (t: number) => {
   return `${Math.floor(s / 86400)} d ago`;
 };
 
-export default function History() {
+export default function History({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const bodyId = useId();
   const repo = useStore((s) => s.repo);
   const restore = useStore((s) => s.restore);
   const branch = useStore((s) => s.branch);
@@ -38,18 +39,21 @@ export default function History() {
   const landsOn = branches.length > 1 ? vcs.deleteBranch(repo, repo.current).current : null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col border-t border-edge">
-      <PanelHeader title="Versions">
+    <div className={`flex min-h-0 flex-col border-t border-edge ${open ? "flex-1" : "shrink-0"}`}>
+      <PanelHeader title="Versions" open={open} onToggle={onToggle} controls={bodyId}>
         <Chip tone="leader">{repo.current}</Chip>
-        <Button
-          onClick={() => setNaming((v) => !v)}
-          icon={<BranchIcon size={13} />}
-          title="Fork this version so you can keep two cuts side by side"
-        >
-          Variant
-        </Button>
+        {/* Variant and delete act on the open panel, so a folded one keeps only the chip. */}
+        {open && (
+          <Button
+            onClick={() => setNaming((v) => !v)}
+            icon={<BranchIcon size={13} />}
+            title="Fork this version so you can keep two cuts side by side"
+          >
+            Variant
+          </Button>
+        )}
         {/* Only while another variant remains: the last one cannot go. */}
-        {landsOn && (
+        {open && landsOn && (
           <IconButton
             variant="danger"
             label="Delete this variant"
@@ -94,6 +98,7 @@ export default function History() {
         }
       />
 
+      <div id={bodyId} hidden={!open} className="flex min-h-0 flex-1 flex-col">
       {branches.length > 1 && (
         <div className="flex flex-wrap gap-1 border-b border-edge px-3 py-2">
           {branches.map((b) => (
@@ -175,6 +180,7 @@ export default function History() {
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );

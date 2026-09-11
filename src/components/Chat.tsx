@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { useAi } from "@/lib/ai/session";
 import { LISTED, PROVIDERS } from "@/lib/ai/providers";
-import { Button, ChevronIcon, IconButton, PanelHeader, SendIcon, StopIcon } from "@/components/ui";
+import { Button, ChevronIcon, IconButton, PanelHeader, SendIcon, StopIcon, WorkingIcon } from "@/components/ui";
 import ConnectCard from "./ai/ConnectCard";
 import ConnectionDialog from "./ai/ConnectionDialog";
 
@@ -12,13 +12,14 @@ const SUGGESTIONS = [
   "Cut all the silences",
   "Trim to 30 seconds",
   "Drop the first 5 seconds",
-  "Title the opening “Intro”",
+  "Fade out at the end",
 ];
 
 const names = LISTED.map((id) => PROVIDERS[id].name);
 const PROVIDER_LIST = `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
 
-export default function Chat() {
+export default function Chat({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const bodyId = useId();
   const chat = useStore((s) => s.chat);
   const busy = useStore((s) => s.busy);
   const ask = useStore((s) => s.ask);
@@ -73,8 +74,15 @@ export default function Chat() {
     /* Before a conversation starts this panel is only as tall as its content,
        so the version history — the thing that makes Cutline different — gets
        the rest of the rail instead of empty space. */
-    <div className={`flex min-h-0 flex-col ${conversation.length ? "flex-1" : "shrink-0"}`}>
-      <PanelHeader title="Ask">
+    <div className={`flex min-h-0 flex-col ${open && conversation.length ? "flex-1" : "shrink-0"}`}>
+      <PanelHeader title="Ask" open={open} onToggle={onToggle} controls={bodyId}>
+        {/* Folded, a running request still shows it is running. */}
+        {!open && busy && (
+          <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-3">
+            <WorkingIcon size={13} className="text-leader" />
+            Working
+          </span>
+        )}
         {conn && (
           <Button
             onClick={() => setChoosing(true)}
@@ -90,6 +98,9 @@ export default function Chat() {
       </PanelHeader>
 
       {conn && <ConnectionDialog open={choosing} onClose={() => setChoosing(false)} />}
+
+      {/* Hidden, not unmounted, so a half-typed prompt or key survives a fold. */}
+      <div id={bodyId} hidden={!open} className="flex min-h-0 flex-1 flex-col">
 
       {notes.length > 0 && (
         <div className="border-b border-edge px-3 py-2.5">
@@ -229,6 +240,7 @@ export default function Chat() {
       ) : (
         <ConnectCard />
       )}
+      </div>
     </div>
   );
 }
