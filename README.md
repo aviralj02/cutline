@@ -5,9 +5,9 @@ and every change is a **version** you can restore.
 
 No uploads. Your footage never leaves your machine.
 
-New to video editing? **[ARCHITECTURE.md](./ARCHITECTURE.md)** defines every
-term this codebase uses — EDL, ripple delete, dBFS, demuxing, swatches — and
-diagrams the import, render, playback, versioning and agent flows.
+New to video editing? **[ARCHITECTURE.md](./ARCHITECTURE.md)** is a short guide
+to how a browser video editor works — from the edit document to live preview to
+decoding — with every acronym spelled out.
 
 ## The idea
 
@@ -95,8 +95,8 @@ the edit). `query.ts` owns the conversions.
 ## Tests
 
 ```bash
-bun test                    # 159 unit tests: edit algebra, silence DSP, agent tools, BYOK
-bun test/e2e/verify.mjs     # 201 checks in real Chrome — records its own test video
+bun test                    # 171 unit tests: edit algebra, silence DSP, agent tools, BYOK
+bun test/e2e/verify.mjs     # 219 checks in real Chrome — records its own test video
 ```
 
 The e2e script generates a 20-second clip with two deliberate silent stretches using

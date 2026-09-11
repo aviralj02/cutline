@@ -5,10 +5,11 @@
 A browser video editor where the edit is a document, an agent edits that
 document, and every change is a version. Nothing uploads.
 
-**[ARCHITECTURE.md](./ARCHITECTURE.md)** is the vocabulary and flow reference:
-every domain term defined, plus diagrams for import, per-frame rendering, the
-playback clock, version coalescing, the agent loop and silence-to-cut. Read it
-before touching the render pipeline or the coordinate conversions.
+**[ARCHITECTURE.md](./ARCHITECTURE.md)** is the short guide to how it works:
+the edit document, the two clocks, how preview reads the edit each frame, where
+decoding happens, versions, the agent, and a glossary with every acronym
+spelled out. Read it before touching the render pipeline or the coordinate
+conversions.
 
 ## Architecture, in one paragraph
 
@@ -17,7 +18,8 @@ the agent's tools are pure functions over it, version control snapshots it, and
 preview *interprets* it rather than rendering it. The video track is contiguous
 by construction — clips play back to back in array order and no clip stores its
 timeline position, so a ripple edit touches one array entry instead of
-rewriting `at` on every clip after it.
+rewriting `at` on every clip after it. Empty space is an entry
+too: a gap is a *slug*, a clip of blank leader (`isSlug`).
 
 Two coordinate systems run through the codebase and mixing them is the main
 hazard: **source time** (seconds into an original file) and **timeline time**
@@ -140,6 +142,13 @@ edge) covers every effect, and anything added later inherits it.
   the preview feeds the answer back into its own input and the order flickers
   between two slots. Under 4px of travel is still a click, so selecting a clip
   never shuffles the track.
+- **A trim moves only the edge you drag.** Trimming a head in leaves a slug
+  before the clip, trimming a tail in leaves one after it, and nothing else on
+  the track moves. Dragging back out uses that gap first and stops at a
+  neighbouring clip rather than pushing it; only the last clip's tail changes
+  the edit's length. A slug plays as black, is never left at the end, and is
+  closed by selecting it and deleting it. The ripple trim this replaced pulled
+  every later clip along, so trimming a head read as the wrong edge moving.
 - **Register a global shortcut listener once.** `Timeline`'s keydown effect
   depended on `edl`, so it re-registered on every edit — and that silently ate
   every arrow key. `Transport` owns a window keydown listener too and mounts
@@ -169,8 +178,11 @@ edge) covers every effect, and anything added later inherits it.
   `decodeAudio` (whole file to `arrayBuffer`, then `decodeAudioData`) is the
   fallback for codecs WebCodecs will not take, and it is why an hour of 48kHz
   stereo used to die on import at 1.4GB of decoded audio. Memory is now a
-  function of duration alone, ~4MB an hour, and the ceiling on an import is
-  disk rather than RAM.
+  function of duration alone, ~4MB an hour. Imports are capped at 4 GB
+  (`MAX_FILE_BYTES`) to fit the footage people actually bring, not to protect
+  memory. The whole-file fallback is the one path that holds a file in RAM, so
+  it only runs up to 500 MB (`WHOLE_DECODE_MAX_BYTES`); a bigger file imports
+  without silence analysis, and the import note says so.
 - **Times are container seconds.** The streamed curve starts at the first hop
   that carries audio and adds that offset back (`AudioSummary.startSec`). An
   audio track rarely begins exactly with the video — a MediaRecorder capture
@@ -219,6 +231,7 @@ the playhead moves.
 
 Nothing is hard-cornered. Radius scales with the surface:
 
+- 5px — checkbox faces; a 16px face at 7px reads as a circle.
 - `--radius-sm` (7px) — clips, keycaps, segment buttons.
 - `--radius-ctl` (10px) — buttons, inputs, menus.
 - `--radius-gate` (14px) — the image, the track.
@@ -235,7 +248,7 @@ full design pass, a build, and a screenshot review before anyone caught it.
 
 ### Controls
 
-Compose `Button`, `IconButton` and `Segmented` from `components/ui`. Do not
+Compose `Button`, `IconButton`, `Segmented` and `Checkbox` from `components/ui`. Do not
 hand-roll a control: the speed row and the branch pills were both one-off
 reimplementations of `Segmented` and drifted from it within a day. Targets are
 32px minimum, hover is a translucent white wash so it reads identically on
@@ -358,6 +371,12 @@ until a lane started sliding underneath it. Magnification is expressed as how
 many viewport widths the timeline spans (`SCALE_STEPS`), so 1× always means
 "the whole edit at once" whatever the window or the footage.
 
+**The rail's panels fold.** Ask and Versions each collapse from their heading
+(`PanelHeader` with `open`/`onToggle`), apart or together, and the choice is
+remembered per browser (`cutline.rail`). A folded panel is hidden, not
+unmounted, so typed text survives; a folded Ask still shows the model and a
+Working indicator while a request runs.
+
 **Draw the scroll position; the platform will not.** macOS overlay scrollbars
 occupy no layout — measured here as `offsetHeight - clientHeight === 0` — and
 vanish at rest, so a timeline three screens wide looked like one screen that
@@ -393,8 +412,8 @@ missing. Errors say what went wrong and how to fix it.
 ## Verification
 
 ```bash
-bun test                    # 159 unit tests: edit algebra, effects, trim, undo, variants, DSP, agent tools, BYOK
-bun test/e2e/verify.mjs     # 201 checks in real Chrome — records its own test clip
+bun test                    # 171 unit tests: edit algebra, effects, trim and gaps, undo, variants, DSP, agent tools, BYOK
+bun test/e2e/verify.mjs     # 219 checks in real Chrome — records its own test clip
 bun test/e2e/shots.mjs      # screenshots both screens for design review
 ```
 
@@ -465,3 +484,7 @@ missing reference marker for exactly this reason.
   already renders through exactly the maths the encoder needs.
 - **Transcription.** `toWav16k` is written and tested; no route consumes it. It
   is what lets the agent act on words rather than only on silence.
+- **Text overlays.** The document's `text` field, `addText` and the renderer
+  still work, but there is no manual way to add, edit or remove text, so the
+  agent's text tools are switched off until there is. Nothing the agent can do
+  should be something the user cannot do by hand.

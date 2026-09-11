@@ -714,42 +714,72 @@ log("\n19b. Backspace deletes a selected effect, the way it deletes a clip");
 }
 
 // ---------------------------------------------------------------------------
-log("\n20. Trimming a clip by dragging its edge");
+log("\n20. A trim moves only the edge you drag");
 {
   const total = () =>
     page.evaluate(() => {
       const m = /(\d+):(\d\d)\.(\d\d)\s*\/\s*(\d+):(\d\d)\.(\d\d)/.exec(document.body.innerText);
       return m ? +m[4] * 60 + +m[5] + +m[6] / 100 : -1;
     });
-  const clipBox = () => page.locator("[data-clip]").first().boundingBox();
+  const firstClip = () => page.locator("[data-clip]").first().boundingBox();
+  const lastClip = () => page.locator("[data-clip]").last().boundingBox();
+  const gaps = () => page.locator("[data-gap]").count();
 
+  // --- the head: its left edge follows the pointer, and its end stays ---
   const before = await total();
-  const c0 = await clipBox();
-  // Drag the head of the first clip inward.
+  const c0 = await firstClip();
   await page.mouse.move(c0.x + 3, c0.y + c0.height / 2);
   await page.mouse.down();
   await page.mouse.move(c0.x + 110, c0.y + c0.height / 2, { steps: 12 });
   await page.mouse.up();
   await page.waitForTimeout(500);
-
-  const after = await total();
-  check("trimming the head shortens the timeline", after < before - 0.3,
-        `${before.toFixed(2)}s to ${after.toFixed(2)}s`);
+  const c1 = await firstClip();
+  check("trimming the head moves the head", c1.x > c0.x + 80, `left edge moved ${(c1.x - c0.x).toFixed(1)}px`);
+  check("and leaves the clip's end where it was", Math.abs(c1.x + c1.width - (c0.x + c0.width)) < 2,
+        `right edge moved ${(c1.x + c1.width - c0.x - c0.width).toFixed(1)}px`);
+  check("a gap holds the space, so the edit keeps its length",
+        (await gaps()) === 1 && Math.abs((await total()) - before) < 0.05,
+        `${await gaps()} gap(s), ${before.toFixed(2)}s to ${(await total()).toFixed(2)}s`);
   check("the trim is one version", (await page.getByText("Trim clip").count()) > 0);
+  // For design review: the gap as it first appears on the track.
+  await page.locator("[data-gap]").first().locator("xpath=ancestor::div[contains(@class,'rounded-panel')][1]")
+    .screenshot({ path: `${OUT}/gap.png` }).catch(() => {});
 
-  // The tail must move independently of the head.
-  const c1 = await clipBox();
-  const startBefore = c1.x;
-  await page.mouse.move(c1.x + c1.width - 3, c1.y + c1.height / 2);
+  // --- playback runs through the gap as black, rather than stopping at it ---
+  const gapSec = parseFloat(((await page.locator("[data-gap]").first().getAttribute("aria-label")) ?? "").match(/[\d.]+/)?.[0] ?? "0");
+  await page.keyboard.press("Home");
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(gapSec * 1000 + 900);
+  const at = +((await page.getByRole("slider", { name: "Playhead" }).getAttribute("aria-valuenow")) ?? 0);
+  const playing = await page.getByRole("button", { name: "Pause", exact: true }).isVisible();
+  if (playing) await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.waitForTimeout(300);
+  check("playback runs through a gap and on into the clip", playing && at > gapSec + 0.2,
+        `playhead at ${at}s past a ${gapSec}s gap, ${playing ? "still playing" : "stopped"}`);
+
+  // --- the last clip's tail: the edit ends earlier, and the head stays ---
+  const l0 = await lastClip();
+  const afterHead = await total();
+  await page.mouse.move(l0.x + l0.width - 3, l0.y + l0.height / 2);
   await page.mouse.down();
-  await page.mouse.move(c1.x + c1.width - 90, c1.y + c1.height / 2, { steps: 10 });
+  await page.mouse.move(l0.x + l0.width - 90, l0.y + l0.height / 2, { steps: 10 });
   await page.mouse.up();
   await page.waitForTimeout(500);
-  const c2 = await clipBox();
-  check("trimming the tail leaves the head where it was", Math.abs(c2.x - startBefore) < 2,
-        `moved ${(c2.x - startBefore).toFixed(1)}px`);
-  check("trimming the tail shortens it further", (await total()) < after,
-        `${after.toFixed(2)}s to ${(await total()).toFixed(2)}s`);
+  const l1 = await lastClip();
+  check("trimming the tail leaves the head where it was", Math.abs(l1.x - l0.x) < 2,
+        `moved ${(l1.x - l0.x).toFixed(1)}px`);
+  check("trimming the last clip's tail shortens the edit", (await total()) < afterHead - 0.3,
+        `${afterHead.toFixed(2)}s to ${(await total()).toFixed(2)}s`);
+
+  // --- a gap is closed the way a clip is deleted ---
+  const beforeClose = await total();
+  await page.locator("[data-gap]").first().click();
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(400);
+  check("selecting a gap and pressing Backspace closes it",
+        (await gaps()) === 0 && (await total()) < beforeClose - 0.3,
+        `${beforeClose.toFixed(2)}s to ${(await total()).toFixed(2)}s`);
+  check("as one version, named for what it did", (await page.getByText("Close gap", { exact: true }).count()) === 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1658,15 +1688,15 @@ log("\n25e. Bring your own key: straight from this browser to the provider");
         (await modelButton().innerText().catch(() => "")).includes("gpt-5"));
   script.openai.push(
     { body: gpt({ content: null, tool_calls: [{ id: "call_e2e", type: "function", function: {
-      name: "add_text", arguments: JSON.stringify({ at: 0, dur: 2, content: "Intro", style: "title" }),
+      name: "add_fade", arguments: JSON.stringify({ at: 0, dur: 1, mode: "in" }),
     } }] }, "tool_calls") },
-    { body: gpt({ content: "Titled the opening." }, "stop") },
+    { body: gpt({ content: "Faded in the opening." }, "stop") },
   );
   const v3 = await versions();
-  await askFor("Title the opening Intro");
+  await askFor("Fade in the opening");
   const [o1, o2] = sent.openai.slice(-2);
   check("the same edit works over the OpenAI wire",
-        (await versions()) - v3 === 1 && (await aside.getByText("Titled the opening.").isVisible()));
+        (await versions()) - v3 === 1 && (await aside.getByText("Faded in the opening.").isVisible()));
   check("tools go as functions, and results come back by call id",
         o1?.body.tools?.[0]?.type === "function" && o1?.headers.authorization === `Bearer ${OPENAI}` &&
         (o2?.body.messages ?? []).some((m) => m.role === "tool" && m.tool_call_id === "call_e2e"));
@@ -1690,6 +1720,76 @@ log("\n25e. Bring your own key: straight from this browser to the provider");
   page.off("request", onRequest);
   await page.unroute("https://api.anthropic.com/**");
   await page.unroute("https://api.openai.com/**");
+}
+
+// ---------------------------------------------------------------------------
+log("\n25f. Ask and Versions fold, together or apart");
+{
+  const heading = (name) => page.getByRole("button", { name, exact: true });
+  const isOpen = async (name) => (await heading(name).getAttribute("aria-expanded")) === "true";
+  const height = (name) =>
+    page.evaluate((n) => {
+      const h = [...document.querySelectorAll("aside h2")].find((e) => e.textContent === n);
+      return Math.round(h?.parentElement?.parentElement?.getBoundingClientRect().height ?? -1);
+    }, name);
+  const keyInput = () => page.locator("aside").getByLabel("API key");
+
+  check("both start open", (await isOpen("Ask")) && (await isOpen("Versions")));
+
+  const versions0 = await height("Versions");
+  await heading("Ask").click();
+  await page.waitForTimeout(300);
+  check("folding Ask leaves just its heading", (await height("Ask")) <= 42, `${await height("Ask")}px`);
+  check("and gives its room to Versions", (await height("Versions")) > versions0 + 100,
+        `${versions0}px to ${await height("Versions")}px`);
+  check("the fold is announced to assistive tech", !(await isOpen("Ask")));
+  await page.locator("aside").screenshot({ path: `${OUT}/rail-folded.png` });
+
+  await heading("Ask").click();
+  await page.waitForTimeout(300);
+  check("unfolding Ask brings its contents back", (await isOpen("Ask")) && (await keyInput().isVisible()));
+
+  await heading("Versions").click();
+  await page.waitForTimeout(300);
+  check("folding Versions leaves just its heading", (await height("Versions")) <= 42, `${await height("Versions")}px`);
+  check("while Ask keeps working above it", await keyInput().isVisible());
+
+  await heading("Ask").click();
+  await page.waitForTimeout(300);
+  check("both can fold at once", (await height("Ask")) <= 42 && (await height("Versions")) <= 42);
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  check("the folds are remembered across a reload", !(await isOpen("Ask")) && !(await isOpen("Versions")));
+
+  await heading("Ask").click();
+  await heading("Versions").click();
+  await page.waitForTimeout(300);
+  check("and both unfold again", (await isOpen("Ask")) && (await isOpen("Versions")) && (await keyInput().isVisible()));
+
+  // The remember box: a real checkbox, reached by Tab, toggled by Space, with a ring and a 32px target.
+  await keyInput().click();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(250);
+  const box = await page.evaluate(() => {
+    const input = document.querySelector('aside form input[type="checkbox"]');
+    const face = input?.nextElementSibling;
+    return {
+      focused: document.activeElement === input,
+      checked: input?.checked,
+      ring: face ? getComputedStyle(face).outlineStyle : "none",
+      target: Math.round(input?.closest("label")?.getBoundingClientRect().height ?? 0),
+    };
+  });
+  check("the remember box is reached by Tab and toggled by Space", box.focused && box.checked === false,
+        `focused ${box.focused}, checked ${box.checked}`);
+  check("and shows where keyboard focus is", box.ring === "solid", `outline ${box.ring}`);
+  check("its target is at least 32px tall", box.target >= 32, `${box.target}px`);
+  await page.locator('aside form[aria-label="Connect a model"]').screenshot({ path: `${OUT}/checkbox-focus.png` });
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(250);
+  await page.locator('aside form[aria-label="Connect a model"]').screenshot({ path: `${OUT}/checkbox-on.png` });
 }
 
 // ---------------------------------------------------------------------------
