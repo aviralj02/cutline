@@ -16,6 +16,7 @@ export default function EffectInspector() {
   const apply = useStore((s) => s.apply);
   const setDraft = useStore((s) => s.setDraft);
   const commitDraft = useStore((s) => s.commitDraft);
+  const media = useStore((s) => s.media);
 
   const edl = useEdl();
   const effect = selected ? findEffect(edl, selected) : null;
@@ -30,7 +31,7 @@ export default function EffectInspector() {
   if (!effect || !track) {
     return (
       <div className="flex h-[46px] items-center border-t border-edge bg-white/[.02] px-3.5 text-[12px] text-ink-3">
-        Select a fade or zoom to adjust it
+        Select a fade, zoom or sound to adjust it
       </div>
     );
   }
@@ -54,7 +55,24 @@ export default function EffectInspector() {
         {fmt(effect.at)} for {effect.dur.toFixed(2)}s
       </span>
 
-      {effect.kind === "fade" ? (
+      {effect.kind === "sound" ? (
+        <>
+          <span className="max-w-[14rem] truncate text-[12px] text-ink-2">
+            {media.find((m) => m.id === effect.src)?.name ?? "Sound"}
+          </span>
+          <span className="tnum shrink-0 font-mono text-[11px] text-ink-3">from {fmt(effect.in)}</span>
+          <Slider
+            label="Volume"
+            min={0}
+            max={1}
+            step={0.01}
+            value={effect.volume}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={(volume) => scrubParam({ volume })}
+            onCommit={() => commitDraft("Sound volume")}
+          />
+        </>
+      ) : effect.kind === "fade" ? (
         <>
           <Segmented
             label="Fade direction"

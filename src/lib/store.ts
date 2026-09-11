@@ -3,8 +3,8 @@
 import { create } from "zustand";
 import { nanoid } from "nanoid";
 import type { Edl } from "./edl/types";
-import { duration } from "./edl/query";
-import { insertClip } from "./edl/ops";
+import { duration, soundsOf } from "./edl/query";
+import { addSound as placeSound, insertClip } from "./edl/ops";
 import { emptyEdl } from "./edl/types";
 import * as vcs from "./vcs/repo";
 import type { Author, Commit, Repo } from "./vcs/repo";
@@ -108,6 +108,8 @@ interface State {
   undo: () => void;
   redo: () => void;
   addMedia: (file: File) => Promise<void>;
+  /** Put a sound file on the sound lane at the playhead. */
+  addSound: (file: File) => Promise<void>;
   reset: () => Promise<void>;
 }
 
@@ -351,6 +353,39 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  async addSound(file) {
+    if (!get().repo) return;
+    set({ status: `Adding ${file.name}…`, busy: true });
+    try {
+      const problem = await checkRoom(file);
+      if (problem) throw new Error(problem);
+      // One streamed pass gives the file's length and its waveform, and proves it can be played.
+      const sum = await summariseAudio(file, { buckets: 1600 });
+      if (!sum) throw new Error(`${file.name} has no sound in it that this browser can play.`);
+      const id = nanoid(10);
+      await putMedia(id, file);
+      void keepStorage();
+      const info: MediaInfo = { id, name: file.name, duration: sum.duration, kind: "sound" };
+      set((s) => ({
+        media: [...s.media, info],
+        waveforms: { ...s.waveforms, [id]: Array.from(sum.wave) },
+        busy: false,
+        status: null,
+      }));
+      get().apply(placeSound(edlOf(get().repo), { src: id, srcDur: sum.duration, at: get().playhead }), `Add sound ${file.name}`);
+      // Selected, so its volume is already in the inspector.
+      const added = soundsOf(edlOf(get().repo)).find((x) => x.src === id);
+      if (added) get().selectEffect(added.id);
+    } catch (err) {
+      const text = err instanceof Error ? err.message : "Could not add that sound.";
+      set((s) => ({
+        busy: false,
+        status: text,
+        chat: [...s.chat, { id: nanoid(6), role: "system", text, failed: true }],
+      }));
+    }
+  },
+
   restore(commitId) {
     const repo = get().repo;
     if (!repo) return;
@@ -417,7 +452,17 @@ export const useStore = create<State>((set, get) => ({
       // Runs in the browser, so the key goes only to the provider; steps show as they happen.
       const run = await runAgent({
         edl: edlOf(repo),
-        ctx: { media, analysis },
+        ctx: {
+          media,
+          analysis,
+          playhead: get().playhead,
+          selectedId: get().selectedClip ?? get().selectedEffect,
+          ...(() => {
+            const head = vcs.head(repo);
+            const parent = head.parent ? repo.commits[head.parent] : null;
+            return parent ? { lastChange: { message: head.message, before: parent.edl } } : {};
+          })(),
+        },
         prompt,
         prior: exchanges(chat),
         open: openerFor(conn),

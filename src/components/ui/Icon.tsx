@@ -13,7 +13,10 @@ import {
   ChevronFirst,
   KeyRound,
   LoaderCircle,
+  Music,
   Search,
+  Volume2,
+  VolumeX,
   Square,
   ChevronLast,
   Crop,
@@ -70,6 +73,9 @@ export const CloseIcon = (p: IconProps) => <X {...line} {...p} />;
 export const FadeTrackIcon = (p: IconProps) => <Blend {...line} {...p} />;
 export const ZoomTrackIcon = (p: IconProps) => <ZoomIn {...line} {...p} />;
 export const TextTrackIcon = (p: IconProps) => <Type {...line} {...p} />;
+export const SoundTrackIcon = (p: IconProps) => <Music {...line} {...p} />;
+export const SoundOnIcon = (p: IconProps) => <Volume2 {...line} {...p} />;
+export const SoundOffIcon = (p: IconProps) => <VolumeX {...line} {...p} />;
 
 /**
  * Timeline magnification, not the zoom effect. A stepper either side of a

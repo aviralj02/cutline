@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, useEdl } from "@/lib/store";
-import { cropOf, duration, fadeAt, fmt, isCropped, isSlug, outputSize, placed, zoomAt } from "@/lib/edl/query";
+import { cropOf, duration, fadeAt, fmt, isCropped, isSlug, outputSize, placed, soundsOf, zoomAt } from "@/lib/edl/query";
 import { mediaUrl } from "@/lib/media/opfs";
 import type { Edl } from "@/lib/edl/types";
 import { findEffect, resetCrop, setCrop, setCropAspect, updateEffect } from "@/lib/edl/ops";
@@ -35,6 +35,40 @@ function useVideoPool(mediaIds: string[]) {
     };
   }, [mediaIds]);
 
+  return pool;
+}
+
+/** One <audio> element per sound item, created as items appear and dropped as they go. */
+function useSoundPool(edl: Edl) {
+  const pool = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const key = soundsOf(edl).map((s) => `${s.id}:${s.src}`).join(",");
+  useEffect(() => {
+    let cancelled = false;
+    const wanted = key ? key.split(",").map((p) => p.split(":") as [string, string]) : [];
+    const keep = new Set(wanted.map(([id]) => id));
+    for (const [id, el] of pool.current) {
+      if (keep.has(id)) continue;
+      el.pause();
+      pool.current.delete(id);
+    }
+    (async () => {
+      for (const [id, src] of wanted) {
+        if (pool.current.has(id)) continue;
+        const url = await mediaUrl(src);
+        if (!url || cancelled) continue;
+        const el = new Audio(url);
+        el.preload = "auto";
+        pool.current.set(id, el);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+  useEffect(() => {
+    const els = pool.current;
+    return () => els.forEach((el) => el.pause());
+  }, []);
   return pool;
 }
 
@@ -107,8 +141,9 @@ export default function Preview() {
     return item && item.kind === "zoom" ? item : null;
   }, [edl, selectedEffect, cropping]);
   const total = duration(edl);
-  const mediaIds = useMemo(() => media.map((m) => m.id), [media]);
+  const mediaIds = useMemo(() => media.filter((m) => m.kind !== "sound").map((m) => m.id), [media]);
   const pool = useVideoPool(mediaIds);
+  const sounds = useSoundPool(edl);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const headRef = useRef(playhead);
@@ -139,9 +174,24 @@ export default function Preview() {
       last = now;
 
       for (const [id, v] of pool.current) {
+        v.muted = !!cur.videoMuted;
         if (!spot || gap || id !== spot.clip.src) {
           if (!v.paused) v.pause();
         }
+      }
+
+      // Sound items follow the playhead, re-seeked only when they drift, so they never stutter.
+      for (const s of soundsOf(cur)) {
+        const a = sounds.current.get(s.id);
+        if (!a) continue;
+        if (!playRef.current || !spot || t < s.at || t >= s.at + s.dur) {
+          if (!a.paused) a.pause();
+          continue;
+        }
+        const want = s.in + (t - s.at);
+        if (Math.abs(a.currentTime - want) > 0.25) a.currentTime = want;
+        a.volume = s.volume;
+        if (a.paused) void a.play().catch(() => {});
       }
 
       if (!spot) {
@@ -242,12 +292,13 @@ export default function Preview() {
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [pool, setPlayhead, setPlaying]);
+  }, [pool, sounds, setPlayhead, setPlaying]);
 
   useEffect(() => {
     if (playing) return;
     for (const [, v] of pool.current) if (!v.paused) v.pause();
-  }, [playing, pool]);
+    for (const [, a] of sounds.current) if (!a.paused) a.pause();
+  }, [playing, pool, sounds]);
 
   // Dragging updates a draft; only letting go writes a version. Otherwise a
   // single crop gesture would bury the history under a hundred entries.

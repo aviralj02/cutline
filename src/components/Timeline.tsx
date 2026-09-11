@@ -2,17 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, useEdl } from "@/lib/store";
-import { clipCount, clipNumber, dropSlot, duration, fmt, isFade, isSlug, placed, tracksOf } from "@/lib/edl/query";
+import { clipCount, clipNumber, dropSlot, duration, fmt, isFade, isSlug, isSound, placed, tracksOf } from "@/lib/edl/query";
 import {
   addEffect, addTrack, deleteClip, makeEffect, moveClip, moveEffect, removeEffect,
-  removeTrack, setSpeed, splitAt, swapClips, trackOfEffect, trimClipEdge, trimEffect,
+  removeTrack, setSpeed, setVideoMuted, splitAt, swapClips, trackOfEffect, trimClipEdge, trimEffect,
 } from "@/lib/edl/ops";
-import type { Effect, TrackKind } from "@/lib/edl/types";
+import type { Effect, Sound, TrackKind } from "@/lib/edl/types";
 import EffectInspector from "./EffectInspector";
 import {
   AddIcon, AddMediaIcon, BackspaceIcon, Button, CloseIcon, FadeTrackIcon,
   FilmIcon, IconButton, Kbd, ScaleInIcon, ScaleOutIcon, Segmented, SpeedIcon,
-  SplitIcon, TextTrackIcon, TrashIcon, ZoomTrackIcon,
+  SoundOffIcon, SoundOnIcon, SoundTrackIcon, SplitIcon, TextTrackIcon, TrashIcon, ZoomTrackIcon,
 } from "@/components/ui";
 
 /**
@@ -74,6 +74,8 @@ export default function Timeline() {
   const setDraft = useStore((s) => s.setDraft);
   const commitDraft = useStore((s) => s.commitDraft);
   const addMedia = useStore((s) => s.addMedia);
+  const addSound = useStore((s) => s.addSound);
+  const soundInput = useRef<HTMLInputElement>(null);
 
   const edl = useEdl();
   const spots = useMemo(() => placed(edl), [edl]);
@@ -432,10 +434,13 @@ export default function Timeline() {
           live = { ...live, at: Math.max(0, t - offset) };
         } else if (kind === "start") {
           const end = item.at + item.dur;
-          const at = Math.max(0, Math.min(end - 0.08, t));
+          // A sound can't start before its own file does, or end after it.
+          const floor = isSound(item) ? Math.max(0, item.at - item.in) : 0;
+          const at = Math.max(floor, Math.min(end - 0.08, t));
           live = { ...live, at, dur: end - at };
         } else {
-          live = { ...live, dur: Math.max(0.08, t - item.at) };
+          const ceiling = isSound(item) ? item.srcDur - item.in : Number.POSITIVE_INFINITY;
+          live = { ...live, dur: Math.min(ceiling, Math.max(0.08, t - item.at)) };
         }
         setDrag(live);
       };
@@ -445,12 +450,13 @@ export default function Timeline() {
         window.removeEventListener("pointercancel", up);
         // One version per gesture, not one per pixel.
         setDrag(null);
+        const noun = isSound(item) ? "sound" : "effect";
         if (kind === "move") {
-          if (Math.abs(live.at - item.at) > 1e-4) apply(moveEffect(edl, item.id, live.at), "Move effect");
+          if (Math.abs(live.at - item.at) > 1e-4) apply(moveEffect(edl, item.id, live.at), `Move ${noun}`);
         } else if (kind === "start") {
-          if (Math.abs(live.at - item.at) > 1e-4) apply(trimEffect(edl, item.id, "start", live.at), "Trim effect");
+          if (Math.abs(live.at - item.at) > 1e-4) apply(trimEffect(edl, item.id, "start", live.at), `Trim ${noun}`);
         } else if (Math.abs(live.dur - item.dur) > 1e-4) {
-          apply(trimEffect(edl, item.id, "end", item.at + live.dur), "Trim effect");
+          apply(trimEffect(edl, item.id, "end", item.at + live.dur), `Trim ${noun}`);
         }
       };
       window.addEventListener("pointermove", move);
@@ -464,6 +470,8 @@ export default function Timeline() {
 
   /** New effects land at the playhead, where the user is already looking. */
   const addHere = (trackId: string, kind: TrackKind) => {
+    // A sound needs a file, so the sound lane adds through its file picker instead.
+    if (kind === "sound") return;
     const at = Math.min(playhead, Math.max(0, total - 1));
     const item = makeEffect(kind, at);
     apply(addEffect(edl, trackId, item), `Add ${kind}`);
@@ -473,6 +481,22 @@ export default function Timeline() {
   };
 
   const pct = (t: number) => (span ? (t / span) * 100 : 0);
+
+  const soundName = (s: Sound) => media.find((m) => m.id === s.src)?.name ?? "Sound";
+  /** Waveform bars for the part of a sound's file that is on the lane, at a fixed pixel pitch. */
+  const soundBars = (s: Sound, live: { at: number; dur: number }) => {
+    const wave = waveforms[s.src] ?? [];
+    const px = span ? (live.dur / span) * contentW : 0;
+    const count = Math.max(0, Math.min(300, Math.floor(px / 4)));
+    if (!wave.length || !count) return [];
+    const from = s.in + (live.at - s.at);
+    const g = gain[s.src] ?? 1;
+    return Array.from({ length: count }, (_, i) => {
+      const t = from + live.dur * ((i + 0.5) / count);
+      const idx = Math.min(wave.length - 1, Math.max(0, Math.floor((t / (s.srcDur || 1)) * wave.length)));
+      return { x: (i + 0.5) / count, h: Math.max(0.08, Math.min(1, (wave[idx] ?? 0) * g)) * 0.7 };
+    });
+  };
 
   const step = useMemo(() => {
     if (!span || !contentW) return TICK_STEPS[3];
@@ -506,7 +530,8 @@ export default function Timeline() {
     name: string,
     onRemove?: () => void,
     onAdd?: () => void,
-    onAddMedia?: () => void,
+    addFile?: { accept: string; label: string; title: string; take: (file: File) => void },
+    extra?: React.ReactNode,
   ) => (
     // `self-stretch`, not `h-full`: a percentage height against an auto-height
     // flex row collapses to the label's own 20px, which stayed invisible until
@@ -528,19 +553,20 @@ export default function Timeline() {
           <AddIcon size={12} />
         </button>
       )}
-      {onAddMedia && (
+      {extra}
+      {addFile && (
         <label
-          title="Add another video to the end of this track"
+          title={addFile.title}
           className="grid h-5 w-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-3 transition-colors hover:bg-white/[.08] hover:text-ink focus-within:bg-white/[.08] focus-within:text-ink"
         >
           <input
             type="file"
-            accept="video/*"
-            aria-label="Add another video"
+            accept={addFile.accept}
+            aria-label={addFile.label}
             className="sr-only"
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) void addMedia(f);
+              if (f) addFile.take(f);
               e.target.value = "";
             }}
           />
@@ -690,7 +716,40 @@ export default function Timeline() {
                 <div className="relative flex flex-col gap-1.5">
                   {/* Video lane */}
                   <div className="flex">
-                    {laneHead(<FilmIcon size={13} />, "Video", undefined, undefined, () => {})}
+                    {laneHead(
+                      <FilmIcon size={13} />,
+                      "Video",
+                      undefined,
+                      undefined,
+                      {
+                        accept: "video/*",
+                        label: "Add another video",
+                        title: "Add another video to the end of this track",
+                        take: (f) => void addMedia(f),
+                      },
+                      // The video's own sound, for the whole edit; a version like any edit.
+                      <button
+                        type="button"
+                        onClick={() =>
+                          apply(
+                            setVideoMuted(edl, !edl.videoMuted),
+                            edl.videoMuted ? "Unmute original audio" : "Mute original audio",
+                          )
+                        }
+                        aria-pressed={!!edl.videoMuted}
+                        aria-label={edl.videoMuted ? "Unmute original audio" : "Mute original audio"}
+                        title={
+                          edl.videoMuted
+                            ? "The video's own sound is off. Turn it back on."
+                            : "Turn off the video's own sound; sound lanes still play."
+                        }
+                        className={`grid h-5 w-5 shrink-0 place-items-center rounded-sm transition-colors hover:bg-white/[.08] hover:text-ink ${
+                          edl.videoMuted ? "bg-white/[.09] text-ink" : "text-ink-3"
+                        }`}
+                      >
+                        {edl.videoMuted ? <SoundOffIcon size={12} /> : <SoundOnIcon size={12} />}
+                      </button>,
+                    )}
                     <div
                       ref={lanesRef}
                       style={{ width: contentW }}
@@ -789,7 +848,7 @@ export default function Timeline() {
                                       data-bar=""
                                       className={`absolute top-1/2 -translate-y-1/2 rounded-full ${
                                         isSel ? "bg-[#c9c9c9]/85" : "bg-[#8f8f8f]/60"
-                                      }`}
+                                      } ${edl.videoMuted ? "opacity-30" : ""}`}
                                       style={{
                                         left: `${frac * 100}%`,
                                         // A real pixel width, so the pitch stays
@@ -872,50 +931,95 @@ export default function Timeline() {
                   {tracks.map((track) => (
                     <div key={track.id} className="flex">
                       {laneHead(
-                        track.kind === "fade" ? <FadeTrackIcon size={13} /> : <ZoomTrackIcon size={13} />,
+                        track.kind === "fade" ? (
+                          <FadeTrackIcon size={13} />
+                        ) : track.kind === "zoom" ? (
+                          <ZoomTrackIcon size={13} />
+                        ) : (
+                          <SoundTrackIcon size={13} />
+                        ),
                         track.name,
                         () => apply(removeTrack(edl, track.id), `Remove ${track.name} track`),
-                        () => addHere(track.id, track.kind),
+                        track.kind === "sound" ? undefined : () => addHere(track.id, track.kind),
+                        track.kind === "sound"
+                          ? {
+                              accept: "audio/*",
+                              label: "Add another sound",
+                              title: "Add another sound at the playhead",
+                              take: (f) => void addSound(f),
+                            }
+                          : undefined,
                       )}
                       <div
-                        onDoubleClick={() => addHere(track.id, track.kind)}
-                        title={`Double-click to add a ${track.kind} at the playhead`}
+                        onDoubleClick={track.kind === "sound" ? undefined : () => addHere(track.id, track.kind)}
+                        title={track.kind === "sound" ? undefined : `Double-click to add a ${track.kind} at the playhead`}
                         style={{ width: contentW }}
-                        className="relative h-9 shrink-0 touch-none overflow-hidden rounded-ctl bg-[#0d0d0d] ring-1 ring-edge"
+                        className={`relative shrink-0 touch-none overflow-hidden rounded-ctl bg-[#0d0d0d] ring-1 ring-edge ${
+                          track.kind === "sound" ? "h-12" : "h-9"
+                        }`}
                       >
                         {track.items.map((item) => {
                           const live = drag?.id === item.id ? drag : item;
                           const isSel = selectedEffect === item.id;
+                          const sound = isSound(item) ? item : null;
                           return (
                             <div
                               key={item.id}
                               data-effect={item.id}
+                              data-sound={sound ? item.id : undefined}
                               onPointerDown={(e) => startDrag(e, item, "move")}
-                              className={`group absolute inset-y-1 cursor-grab touch-none overflow-hidden rounded-[6px] bg-[#333] active:cursor-grabbing ${
-                                isSel ? "ring-[1.5px] ring-leader" : "ring-1 ring-white/15"
-                              }`}
+                              title={sound ? `${soundName(sound)}. Drag to move it, or drag an edge to trim it.` : undefined}
+                              className={`group absolute inset-y-1 cursor-grab touch-none overflow-hidden rounded-[6px] active:cursor-grabbing ${
+                                sound ? "bg-[#262626]" : "bg-[#333]"
+                              } ${isSel ? "ring-[1.5px] ring-leader" : "ring-1 ring-white/15"}`}
                               style={{ left: `${pct(live.at)}%`, width: `${Math.max(0.6, pct(live.dur))}%` }}
                             >
-                              {/* The ramp is painted over a surface rather than
-                                  straight onto the lane, so a fade to black is
-                                  still visible on a black lane. */}
-                              <span
-                                className="pointer-events-none absolute inset-0"
-                                style={{
-                                  background: isFade(item)
-                                    ? item.mode === "in"
-                                      ? `linear-gradient(90deg, ${item.color}, transparent)`
-                                      : item.mode === "out"
-                                        ? `linear-gradient(90deg, transparent, ${item.color})`
-                                        : `linear-gradient(90deg, transparent, ${item.color} 50%, transparent)`
-                                    : "linear-gradient(90deg, rgba(224,169,46,.12), rgba(224,169,46,.42), rgba(224,169,46,.12))",
-                                }}
-                              />
-                              <span className="pointer-events-none absolute inset-0 flex items-center justify-center truncate px-3 text-[10px] font-medium text-ink [text-shadow:0_1px_3px_rgba(0,0,0,.95)]">
-                                {isFade(item)
-                                  ? item.mode === "in" ? "Fade in" : item.mode === "out" ? "Fade out" : "Dip"
-                                  : `${item.scale.toFixed(1)}×`}
-                              </span>
+                              {sound ? (
+                                <>
+                                  {/* The part of the file on the lane, so a head trim visibly moves into the music. */}
+                                  {/* Bars sit below the name's strip, so the name never has to be read through them. */}
+                                  <span className="pointer-events-none absolute inset-x-1 bottom-1 top-4">
+                                    {soundBars(sound, live).map((b, i) => (
+                                      <span
+                                        key={i}
+                                        className={`absolute top-1/2 w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full ${
+                                          isSel ? "bg-[#c9c9c9]/80" : "bg-[#8f8f8f]/55"
+                                        }`}
+                                        style={{ left: `${b.x * 100}%`, height: `${b.h * 100}%` }}
+                                      />
+                                    ))}
+                                  </span>
+                                  <span className="pointer-events-none absolute left-2.5 top-0.5 flex max-w-[calc(100%-1.25rem)] items-center gap-1.5 text-[10px] leading-3.5 text-ink-2">
+                                    <span className="truncate">{soundName(sound)}</span>
+                                    {sound.volume < 1 && (
+                                      <span className="tnum shrink-0 font-mono text-ink-3">{Math.round(sound.volume * 100)}%</span>
+                                    )}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  {/* The ramp is painted over a surface, so a fade to black still shows on a black lane. */}
+                                  <span
+                                    className="pointer-events-none absolute inset-0"
+                                    style={{
+                                      background: isFade(item)
+                                        ? item.mode === "in"
+                                          ? `linear-gradient(90deg, ${item.color}, transparent)`
+                                          : item.mode === "out"
+                                            ? `linear-gradient(90deg, transparent, ${item.color})`
+                                            : `linear-gradient(90deg, transparent, ${item.color} 50%, transparent)`
+                                        : "linear-gradient(90deg, rgba(224,169,46,.12), rgba(224,169,46,.42), rgba(224,169,46,.12))",
+                                    }}
+                                  />
+                                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center truncate px-3 text-[10px] font-medium text-ink [text-shadow:0_1px_3px_rgba(0,0,0,.95)]">
+                                    {isFade(item)
+                                      ? item.mode === "in" ? "Fade in" : item.mode === "out" ? "Fade out" : "Dip"
+                                      : item.kind === "zoom"
+                                        ? `${item.scale.toFixed(1)}×`
+                                        : null}
+                                  </span>
+                                </>
+                              )}
 
                               {/* Trim handles. Wide enough to hit, narrow enough
                                   not to eat the body drag on a short effect. */}
@@ -924,7 +1028,7 @@ export default function Timeline() {
                                   key={edge}
                                   role="slider"
                                   tabIndex={0}
-                                  aria-label={`Trim ${edge} of ${isFade(item) ? "fade" : "zoom"}`}
+                                  aria-label={`Trim ${edge} of ${item.kind}`}
                                   aria-valuenow={Math.round((edge === "start" ? live.at : live.at + live.dur) * 100) / 100}
                                   aria-valuemin={0}
                                   aria-valuemax={Math.round(total * 100) / 100}
@@ -935,7 +1039,7 @@ export default function Timeline() {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     const at = edge === "start" ? item.at + d : item.at + item.dur + d;
-                                    apply(trimEffect(edl, item.id, edge, at), "Trim effect");
+                                    apply(trimEffect(edl, item.id, edge, at), sound ? "Trim sound" : "Trim effect");
                                   }}
                                   className={`absolute inset-y-0 w-2 cursor-ew-resize touch-none rounded-[3px] bg-white/0 transition-colors hover:bg-white/25 focus-visible:bg-white/35 ${
                                     edge === "start" ? "left-0" : "right-0"
@@ -1025,6 +1129,25 @@ export default function Timeline() {
                   Add zoom track
                 </Button>
               )}
+              {/* A sound lane with nothing on it is no use, so this adds the lane and the sound together. */}
+              {!tracks.some((t) => t.kind === "sound") && (
+                <Button icon={<SoundTrackIcon size={13} />} onClick={() => soundInput.current?.click()}>
+                  Add sound
+                </Button>
+              )}
+              <input
+                ref={soundInput}
+                type="file"
+                accept="audio/*"
+                aria-label="Add a sound"
+                className="sr-only"
+                tabIndex={-1}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void addSound(f);
+                  e.target.value = "";
+                }}
+              />
               {/* The newer affordance wins the hint: reordering is the one
                   that is not visible from the controls. */}
               {(clipCount(edl) > 1 || tracks.length > 0) && (
