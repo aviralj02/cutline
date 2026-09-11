@@ -15,6 +15,10 @@ import {
 } from "./media/analyze";
 import { checkRoom, clearMedia, keepStorage, putMedia } from "./media/opfs";
 import { loadProject, saveProject, clearProject } from "./db";
+import { runAgent, type Exchange } from "./ai/agent";
+import { AiError, explain, type Failure } from "./ai/errors";
+import { PROVIDERS } from "./ai/providers";
+import { openerFor, useAi } from "./ai/session";
 
 export interface ChatEntry {
   id: string;
@@ -23,6 +27,25 @@ export interface ChatEntry {
   /** Tool activity attached to an agent turn. */
   steps?: string[];
   failed?: boolean;
+  /** How to fix a failure, beneath what went wrong. */
+  fix?: string;
+  kind?: Failure;
+  /** Stopped by the user: the steps were shown but never applied. */
+  stopped?: boolean;
+  /** Which model answered, since the model can change between turns. */
+  model?: string;
+}
+
+/** Earlier requests and replies for follow-ups; failed and stopped turns are left out. */
+function exchanges(chat: ChatEntry[]): Exchange[] {
+  const out: Exchange[] = [];
+  for (let i = 0; i < chat.length - 1; i++) {
+    const [a, b] = [chat[i], chat[i + 1]];
+    if (a.role === "you" && b.role === "agent" && !b.failed && !b.stopped) {
+      out.push({ prompt: a.text, reply: b.text || (b.steps ?? []).join("; ") });
+    }
+  }
+  return out;
 }
 
 interface State {
@@ -70,6 +93,9 @@ interface State {
   /** Not undoable — the one caller confirms first. */
   deleteBranch: (name: string) => void;
   ask: (prompt: string) => Promise<void>;
+  /** Abandon the running request. Nothing it did is applied. */
+  stop: () => void;
+  controller: AbortController | null;
   setPlayhead: (t: number, fromPlayback?: boolean) => void;
   setPlaying: (p: boolean) => void;
   select: (clipId: string | null) => void;
@@ -124,6 +150,7 @@ export const useStore = create<State>((set, get) => ({
   cropping: false,
   draft: null,
   redoStack: [],
+  controller: null,
 
   async hydrate() {
     try {
@@ -358,86 +385,70 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async ask(prompt) {
-    const { repo, media, analysis } = get();
-    if (!repo || !prompt.trim()) return;
+    const { repo, media, analysis, chat, busy } = get();
+    const conn = useAi.getState().conn;
+    // The composer only exists once a model is connected.
+    if (!repo || !conn || busy || !prompt.trim()) return;
 
     const turnId = nanoid(6);
+    const controller = new AbortController();
     set((s) => ({
       busy: true,
       playing: false,
+      controller,
       chat: [
         ...s.chat,
         { id: nanoid(6), role: "you", text: prompt },
-        { id: turnId, role: "agent", text: "", steps: [] },
+        { id: turnId, role: "agent", text: "", steps: [], model: conn.model.id },
       ],
     }));
 
     const patch = (fn: (e: ChatEntry) => ChatEntry) =>
       set((s) => ({ chat: s.chat.map((e) => (e.id === turnId ? fn(e) : e)) }));
+    const provider = PROVIDERS[conn.provider];
 
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          edl: edlOf(get().repo),
-          context: { media, analysis },
-        }),
+      // Runs in the browser, so the key goes only to the provider; steps show as they happen.
+      const run = await runAgent({
+        edl: edlOf(repo),
+        ctx: { media, analysis },
+        prompt,
+        prior: exchanges(chat),
+        open: openerFor(conn),
+        signal: controller.signal,
+        onStep: (summary) => patch((e) => ({ ...e, steps: [...(e.steps ?? []), summary] })),
+        onText: (text) => patch((e) => ({ ...e, text })),
       });
 
-      if (!res.ok || !res.body) {
-        const msg = await res.json().catch(() => ({ error: "Request failed." }));
-        patch((e) => ({ ...e, text: msg.error ?? "Request failed.", failed: true }));
-        set({ busy: false });
+      if (run.stop === "refused") {
+        const x = explain(new AiError("refused", run.text), provider, conn.model.id);
+        patch((e) => ({ ...e, text: x.title, fix: x.fix, failed: true, kind: x.kind }));
         return;
       }
-
-      // Server-sent events: tool steps arrive as they happen so the user sees
-      // the edit being made rather than a spinner.
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let finalEdl: Edl | null = null;
-      let said = "";
-      const steps: string[] = [];
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith("data:")) continue;
-          const ev = JSON.parse(line.slice(5).trim());
-          if (ev.type === "tool") {
-            steps.push(ev.summary);
-            patch((e) => ({ ...e, steps: [...steps] }));
-          } else if (ev.type === "text") {
-            said = said ? `${said}\n${ev.text}` : ev.text;
-            patch((e) => ({ ...e, text: said }));
-          } else if (ev.type === "done") {
-            finalEdl = ev.edl as Edl;
-          } else if (ev.type === "error") {
-            patch((e) => ({ ...e, text: ev.message, failed: true }));
-          }
-        }
-      }
-
-      // One commit per turn, labelled with what the user actually asked for.
-      if (finalEdl && steps.length) get().apply(finalEdl, prompt, "agent");
-      if (!said && steps.length) patch((e) => ({ ...e, text: steps.join("; ") }));
+      // One version per request, labelled with what was actually asked for.
+      if (run.steps.length) get().apply(run.edl, prompt, "agent");
+      const note =
+        run.stop === "cap"
+          ? "It stopped after twelve rounds without finishing. What it did so far is saved."
+          : run.stop === "length"
+            ? "Its reply ran past the length limit and was cut short."
+            : "";
+      const said = run.text || (run.steps.length ? "" : "Nothing needed changing.");
+      patch((e) => ({ ...e, text: [said, note].filter(Boolean).join("\n") }));
     } catch (err) {
-      patch((e) => ({
-        ...e,
-        text: err instanceof Error ? err.message : "Could not reach the agent.",
-        failed: true,
-      }));
+      const x = explain(err, provider, conn.model.id);
+      patch((e) =>
+        x.kind === "aborted"
+          ? { ...e, text: "Stopped. Nothing was changed.", stopped: true }
+          : { ...e, text: x.title, fix: x.fix, failed: true, kind: x.kind },
+      );
     } finally {
-      set({ busy: false });
+      set({ busy: false, controller: null });
     }
+  },
+
+  stop() {
+    get().controller?.abort();
   },
 
   setPlayhead(t, fromPlayback = false) {
@@ -477,6 +488,8 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async reset() {
+    // Otherwise a running request would land its edit on a deleted project.
+    get().controller?.abort();
     // The preview stays mounted, reading the files, until the state below
     // clears — so playback stops before they go.
     set({ playing: false });
