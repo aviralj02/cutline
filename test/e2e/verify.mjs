@@ -1338,6 +1338,361 @@ log("\n25d. A variant can be deleted, after saying what goes with it");
 }
 
 // ---------------------------------------------------------------------------
+log("\n25e. Bring your own key: straight from this browser to the provider");
+{
+  // Providers are stood in for with page.route, preflight included, so the real path runs on fake keys.
+  const GOOD = "sk-ant-api03-e2e-good-key-0123456789";
+  const BAD = "sk-ant-api03-e2e-bad-key-0123456789";
+  const OPENAI = "sk-proj-e2e-openai-key-0123456789";
+  const KEYS = [GOOD, BAD, OPENAI];
+
+  const seen = [];
+  const onRequest = (r) => seen.push({ url: r.url(), headers: r.headers(), body: r.postData() ?? "" });
+  page.on("request", onRequest);
+
+  const caps = {
+    thinking: { supported: true, types: { adaptive: { supported: true }, enabled: { supported: false } } },
+    effort: {
+      supported: true, low: { supported: true }, medium: { supported: true },
+      high: { supported: true }, max: { supported: true }, xhigh: { supported: true },
+    },
+  };
+  const anthropicModels = [
+    { type: "model", id: "claude-opus-5", display_name: "Claude Opus 5", created_at: "2026-05-01T00:00:00Z", capabilities: caps },
+    { type: "model", id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5", created_at: "2025-10-01T00:00:00Z", capabilities: null },
+  ];
+  const claude = (content, stop_reason, model = "claude-opus-5") => ({
+    id: `msg_${Math.random().toString(36).slice(2)}`, type: "message", role: "assistant", model,
+    content, stop_reason, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 },
+  });
+  const gpt = (message, finish_reason) => ({
+    id: "chatcmpl-e2e", object: "chat.completion", created: 1, model: "gpt-5",
+    choices: [{ index: 0, message: { role: "assistant", ...message }, finish_reason }],
+  });
+
+  const script = { anthropic: [], openai: [] };
+  const sent = { anthropic: [], openai: [] };
+  const cors = (req) => ({
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": req.headers()["access-control-request-headers"] ?? "*",
+    "content-type": "application/json",
+  });
+  const answer = async (route, provider) => {
+    const req = route.request();
+    if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors(req) }).catch(() => {});
+    // A stopped request is abandoned by the page; answering it late must not throw.
+    const reply = (status, json) =>
+      route.fulfill({ status, headers: cors(req), body: JSON.stringify(json) }).catch(() => {});
+    if (new URL(req.url()).pathname.endsWith("/models")) {
+      if (provider === "openai") {
+        return reply(200, { object: "list", data: [
+          { id: "gpt-5", object: "model", created: 2 },
+          { id: "text-embedding-3-large", object: "model", created: 3 },
+        ] });
+      }
+      if (req.headers()["x-api-key"] !== GOOD) {
+        return reply(401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+      }
+      return reply(200, { data: anthropicModels, has_more: false, first_id: "claude-opus-5", last_id: "claude-haiku-4-5" });
+    }
+    sent[provider].push({ headers: req.headers(), body: JSON.parse(req.postData() || "{}") });
+    const next = script[provider].shift() ?? {
+      body: provider === "openai" ? gpt({ content: "Done." }, "stop") : claude([{ type: "text", text: "Done." }], "end_turn"),
+    };
+    if (next.delay) await new Promise((r) => setTimeout(r, next.delay));
+    return reply(200, next.body);
+  };
+  await page.route("https://api.anthropic.com/**", (r) => answer(r, "anthropic"));
+  await page.route("https://api.openai.com/**", (r) => answer(r, "openai"));
+
+  const aside = page.locator("aside");
+  const keyInput = () => aside.getByLabel("API key");
+  const connectBtn = () => aside.getByRole("button", { name: /^Connect( to|$)/ });
+  const composer = () => aside.getByRole("textbox", { name: "Ask for an edit" });
+  const modelButton = () => aside.getByRole("button", { name: /^Model: / });
+  const versions = () => page.getByRole("button", { name: "Restore" }).count();
+  const total = () =>
+    page.evaluate(() => {
+      const m = /\/\s*(\d+):(\d\d)\.(\d\d)/.exec(document.body.innerText);
+      return m ? +m[1] * 60 + +m[2] + +m[3] / 100 : -1;
+    });
+  const askFor = async (text) => {
+    await composer().fill(text);
+    await composer().press("Enter");
+    await page.waitForTimeout(400);
+    await page.waitForFunction(() => !document.querySelector('aside [aria-label="Stop"]'), null, { timeout: 15000 });
+    await page.waitForTimeout(200);
+  };
+  const stored = () =>
+    page.evaluate(() => ({ local: !!localStorage.getItem("cutline.ai"), session: !!sessionStorage.getItem("cutline.ai") }));
+  // Everything in the rail stays inside it — measured at the floor, where it is 290px.
+  const railSpill = () =>
+    page.evaluate(() => {
+      const a = document.querySelector("aside").getBoundingClientRect();
+      let worst = 0;
+      for (const el of document.querySelectorAll("aside button, aside input, aside label, aside p, aside a")) {
+        if (el.closest(".overflow-y-auto")) continue;
+        const b = el.getBoundingClientRect();
+        if (!b.width || !b.height) continue;
+        worst = Math.max(worst, b.right - a.right, a.left - b.left);
+      }
+      return Math.round(worst);
+    });
+
+  // --- no key yet ---
+  check("with no key, the Ask panel asks for one", await keyInput().isVisible());
+  check("the suggestions wait for a model",
+        await aside.getByRole("button", { name: "Cut all the silences" }).isDisabled());
+  check("and Connect appears only once there is a key to connect", (await connectBtn().count()) === 0);
+
+  await page.setViewportSize({ width: FLOOR, height: 900 });
+  await page.waitForTimeout(400);
+  check("the key card fits the rail at the floor", (await railSpill()) <= 1, `${await railSpill()}px past the rail`);
+  await aside.screenshot({ path: `${OUT}/byok-card.png` });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(400);
+
+  // --- a key that is refused ---
+  await keyInput().fill(BAD);
+  await page.waitForTimeout(250);
+  check("the provider is recognised as the key is pasted",
+        (await aside.getByText("Anthropic", { exact: true }).count()) === 1 &&
+        (await connectBtn().innerText()).includes("Connect to Anthropic"),
+        await connectBtn().innerText());
+  // The card with its button, at the floor, where the rail is tightest.
+  await page.setViewportSize({ width: FLOOR, height: 900 });
+  await page.waitForTimeout(400);
+  check("with a key in, the card still fits the rail", (await railSpill()) <= 1, `${await railSpill()}px past the rail`);
+  await aside.screenshot({ path: `${OUT}/byok-card-key.png` });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(400);
+  await connectBtn().click();
+  const refused = aside.getByText("Anthropic didn't accept this key.");
+  await refused.waitFor({ timeout: 8000 }).catch(() => {});
+  check("a refused key says so, and how to fix it",
+        (await refused.isVisible()) && (await aside.getByText(/copied whole/).isVisible()));
+
+  // --- a key that works ---
+  await keyInput().fill(GOOD);
+  await connectBtn().click();
+  await composer().waitFor({ timeout: 8000 }).catch(() => {});
+  check("a good key connects, and the composer takes the card's place", await composer().isVisible());
+  check("the best model is chosen without asking",
+        (await modelButton().innerText().catch(() => "")).includes("claude-opus-5"));
+
+  // One line, and the nested button's corner is the field's radius less the inset.
+  const field = await page.evaluate(() => {
+    const input = document.querySelector('aside input[aria-label="Ask for an edit"]');
+    const box = input?.parentElement;
+    const send = box?.querySelector("button");
+    if (!input || !box || !send) return null;
+    return {
+      tag: input.tagName,
+      height: box.getBoundingClientRect().height,
+      outer: parseFloat(getComputedStyle(box).borderTopRightRadius),
+      inner: parseFloat(getComputedStyle(send).borderTopRightRadius),
+      inset: send.getBoundingClientRect().top - box.getBoundingClientRect().top,
+    };
+  });
+  check("the composer is a single line", field?.tag === "INPUT" && field.height <= 40,
+        field ? `${field.tag.toLowerCase()}, ${Math.round(field.height)}px tall` : "not found");
+  check("its button's corner is concentric with the field's",
+        !!field && Math.abs(field.outer - field.inset - field.inner) <= 0.5,
+        field ? `${field.outer}px field less ${field.inset}px inset against a ${field.inner}px button` : "");
+
+  // --- an edit, end to end ---
+  const t0 = await total();
+  const v0 = await versions();
+  script.anthropic.push(
+    { body: claude([
+      { type: "thinking", thinking: "", signature: "sig-e2e" },
+      { type: "tool_use", id: "toolu_e2e", name: "ripple_delete", input: { start: 0, end: 1 } },
+    ], "tool_use") },
+    { body: claude([{ type: "text", text: "Dropped the first second." }], "end_turn") },
+  );
+  await askFor("Drop the first second");
+  check("the agent's edit lands", Math.abs(t0 - (await total()) - 1) < 0.05, `${t0}s to ${await total()}s`);
+  check("as one version, named for what was asked",
+        (await versions()) - v0 === 1 && (await page.getByText("Drop the first second", { exact: true }).count()) >= 2);
+  check("its step and its reply are shown",
+        (await aside.getByText("Cut 0:00.00–0:01.00").isVisible()) &&
+        (await aside.getByText("Dropped the first second.").isVisible()));
+
+  const [first, second] = sent.anthropic.slice(-2);
+  check("the request goes straight to Anthropic, marked as coming from a browser",
+        first?.headers["x-api-key"] === GOOD && first?.headers["anthropic-dangerous-direct-browser-access"] === "true");
+  check("Opus 5 thinks adaptively, at high effort, with refusal fallbacks",
+        first?.body.thinking?.type === "adaptive" && first?.body.output_config?.effort === "high" &&
+        first?.body.fallbacks === "default" &&
+        (first?.headers["anthropic-beta"] ?? "").includes("server-side-fallback-2026-07-01"));
+  const echoed = second?.body.messages.at(-2)?.content ?? [];
+  const results = second?.body.messages.at(-1)?.content ?? [];
+  check("its thinking travels back verbatim, and the result answers the call by id",
+        Array.isArray(echoed) && echoed.some((b) => b.type === "thinking" && b.signature === "sig-e2e") &&
+        Array.isArray(results) && results.some((b) => b.type === "tool_result" && b.tool_use_id === "toolu_e2e"));
+
+  // --- a follow-up ---
+  script.anthropic.push({ body: claude([{ type: "text", text: "Nothing more to take out." }], "end_turn") });
+  const v1 = await versions();
+  await askFor("A bit more");
+  const follow = sent.anthropic.at(-1)?.body.messages ?? [];
+  check("a follow-up carries the earlier exchange",
+        follow[0]?.content === "Drop the first second" && String(follow.at(-1)?.content).includes("Request: A bit more"));
+  check("a reply with no edit adds no version", (await versions()) === v1);
+
+  // --- stopping ---
+  script.anthropic.push({ delay: 5000, body: claude([
+    { type: "tool_use", id: "toolu_late", name: "ripple_delete", input: { start: 0, end: 5 } },
+  ], "tool_use") });
+  const v2 = await versions();
+  const t2 = await total();
+  await composer().fill("Trim the start");
+  await composer().press("Enter");
+  const stopBtn = aside.getByRole("button", { name: "Stop" });
+  await stopBtn.waitFor({ timeout: 3000 }).catch(() => {});
+  check("while it works, Send becomes Stop", await stopBtn.isVisible());
+  await stopBtn.click();
+  await page.waitForTimeout(500);
+  check("stopping changes nothing, and says so",
+        (await versions()) === v2 && Math.abs((await total()) - t2) < 0.01 &&
+        (await aside.getByText("Stopped. Nothing was changed.").isVisible()));
+
+  // --- another model, in the modal ---
+  const modal = page.getByRole("dialog", { name: "Model and key" });
+  await modelButton().click();
+  await modal.waitFor({ timeout: 3000 }).catch(() => {});
+  check("the model and key open in a modal", await modal.isVisible());
+  const placed = await page.evaluate(() => {
+    const d = [...document.querySelectorAll("dialog[open]")].pop()?.getBoundingClientRect();
+    if (!d) return null;
+    return {
+      dx: Math.abs(d.left + d.width / 2 - innerWidth / 2) / innerWidth,
+      dy: Math.abs(d.top + d.height / 2 - innerHeight / 2) / innerHeight,
+    };
+  });
+  check("centred on the window", !!placed && placed.dx < 0.06 && placed.dy < 0.06,
+        placed ? `off by ${(placed.dx * 100).toFixed(1)}% / ${(placed.dy * 100).toFixed(1)}%` : "not open");
+  check("with the search focused, ready to type",
+        await page.evaluate(() => document.activeElement?.getAttribute("aria-label") === "Search models"));
+  check("the model in use is marked", (await modal.getByRole("option", { selected: true }).innerText()).includes("claude-opus-5"));
+  const picker = modal.getByRole("combobox");
+  await picker.fill("haiku");
+  await page.waitForTimeout(200);
+  check("the model list filters as you type", (await modal.getByRole("option").count()) === 1);
+  await picker.press("Enter");
+  await page.waitForTimeout(300);
+  check("choosing a model switches to it and closes the modal",
+        !(await modal.isVisible()) && (await modelButton().innerText()).includes("claude-haiku-4-5"));
+
+  // At the floor: the modal fits the window, and Escape backs out of it.
+  await page.setViewportSize({ width: FLOOR, height: 900 });
+  await page.waitForTimeout(400);
+  await modelButton().click();
+  await modal.waitFor({ timeout: 3000 }).catch(() => {});
+  const fits = await page.evaluate(() => {
+    const d = [...document.querySelectorAll("dialog[open]")].pop()?.getBoundingClientRect();
+    return !!d && d.left >= 16 && d.right <= innerWidth - 16 && d.top >= 16 && d.bottom <= innerHeight - 16;
+  });
+  check("the modal fits the window at the floor", fits);
+  // After its .18s entrance: a capture mid-fade shows the page through it.
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${OUT}/byok-modal.png` });
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  check("Escape closes it without changing the model",
+        !(await modal.isVisible()) && (await modelButton().innerText()).includes("claude-haiku-4-5"));
+  await aside.screenshot({ path: `${OUT}/byok-composer.png` });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(400);
+
+  script.anthropic.push({ body: claude([{ type: "text", text: "Done." }], "end_turn", "claude-haiku-4-5") });
+  await askFor("Anything else?");
+  const h = sent.anthropic.at(-1)?.body ?? {};
+  check("a model that cannot think is not asked to",
+        h.model === "claude-haiku-4-5" && !("thinking" in h) && !("output_config" in h) && !("fallbacks" in h));
+
+  // --- where the key lives ---
+  check("it is remembered on this device by default", (await stored()).local);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  check("so a reload keeps the connection", await modelButton().isVisible().catch(() => false));
+  await modelButton().click();
+  await modal.getByRole("checkbox", { name: "Remember on this device" }).uncheck();
+  const tabOnly = await stored();
+  check("unticking keeps it for this tab alone", !tabOnly.local && tabOnly.session);
+  const project = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const open = indexedDB.open("cutline");
+        open.onerror = () => resolve("");
+        open.onsuccess = () => {
+          const get = open.result.transaction("project").objectStore("project").get("current");
+          get.onsuccess = () => resolve(JSON.stringify(get.result ?? ""));
+          get.onerror = () => resolve("");
+        };
+      }),
+  );
+  check("the key is never saved with the project", project.length > 0 && KEYS.every((k) => !project.includes(k)));
+  await modal.getByRole("button", { name: "Forget key" }).click();
+  await page.waitForTimeout(300);
+  const gone = await stored();
+  check("forgetting removes it everywhere and asks for a key again",
+        !gone.local && !gone.session && (await keyInput().isVisible()));
+
+  // --- a key that could be either ---
+  await keyInput().fill("sk-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4");
+  await page.waitForTimeout(250);
+  const which = aside.getByRole("group", { name: "Provider" });
+  check("a look-alike key asks which provider issued it",
+        (await which.isVisible()) && (await connectBtn().innerText()).includes("OpenAI"));
+  await which.getByRole("button", { name: "DeepSeek" }).click();
+  check("and connects where it is told, never where it guesses",
+        (await connectBtn().innerText()).includes("DeepSeek"));
+
+  // --- the other wire ---
+  await keyInput().fill(OPENAI);
+  await connectBtn().click();
+  await composer().waitFor({ timeout: 8000 }).catch(() => {});
+  check("an OpenAI key connects to its best chat model",
+        (await modelButton().innerText().catch(() => "")).includes("gpt-5"));
+  script.openai.push(
+    { body: gpt({ content: null, tool_calls: [{ id: "call_e2e", type: "function", function: {
+      name: "add_text", arguments: JSON.stringify({ at: 0, dur: 2, content: "Intro", style: "title" }),
+    } }] }, "tool_calls") },
+    { body: gpt({ content: "Titled the opening." }, "stop") },
+  );
+  const v3 = await versions();
+  await askFor("Title the opening Intro");
+  const [o1, o2] = sent.openai.slice(-2);
+  check("the same edit works over the OpenAI wire",
+        (await versions()) - v3 === 1 && (await aside.getByText("Titled the opening.").isVisible()));
+  check("tools go as functions, and results come back by call id",
+        o1?.body.tools?.[0]?.type === "function" && o1?.headers.authorization === `Bearer ${OPENAI}` &&
+        (o2?.body.messages ?? []).some((m) => m.role === "tool" && m.tool_call_id === "call_e2e"));
+
+  // --- nothing leaks ---
+  const leaks = seen.filter(
+    (r) =>
+      !/^https:\/\/api\.(anthropic|openai)\.com\//.test(r.url) &&
+      KEYS.some((k) => r.url.includes(k) || r.body.includes(k) || Object.values(r.headers).some((v) => String(v).includes(k))),
+  );
+  check("no key is ever sent anywhere but its provider", leaks.length === 0, leaks.map((r) => r.url).join(", "));
+  const crossed = seen.filter(
+    (r) =>
+      (r.url.startsWith("https://api.openai.com/") && JSON.stringify(r).includes("sk-ant-")) ||
+      (r.url.startsWith("https://api.anthropic.com/") && JSON.stringify(r).includes(OPENAI)),
+  );
+  check("and never to the other provider", crossed.length === 0);
+
+  await modelButton().click();
+  await modal.getByRole("button", { name: "Forget key" }).click();
+  page.off("request", onRequest);
+  await page.unroute("https://api.anthropic.com/**");
+  await page.unroute("https://api.openai.com/**");
+}
+
+// ---------------------------------------------------------------------------
 log("\n26. New project asks before destroying the work");
 {
   const editorOpen = () => page.evaluate(() => document.body.innerText.includes("Timeline"));
