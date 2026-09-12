@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, useEdl } from "@/lib/store";
-import { cropOf, duration, fadeAt, fmt, isCropped, isSlug, outputSize, placed, soundsOf, zoomAt } from "@/lib/edl/query";
+import { FULL_FRAME, cropOf, duration, fmt, isCropped, isSlug, outputSize, placed, soundsOf } from "@/lib/edl/query";
 import { mediaUrl } from "@/lib/media/opfs";
+import { composeFrame } from "@/lib/render/compose";
 import type { Edl } from "@/lib/edl/types";
 import { findEffect, resetCrop, setCrop, setCropAspect, updateEffect } from "@/lib/edl/ops";
 import type { Crop } from "@/lib/edl/types";
@@ -70,45 +71,6 @@ function useSoundPool(edl: Edl) {
     return () => els.forEach((el) => el.pause());
   }, []);
   return pool;
-}
-
-function drawText(ctx: CanvasRenderingContext2D, edl: Edl, t: number, w: number, h: number) {
-  for (const item of edl.text) {
-    if (t < item.at || t >= item.at + item.dur) continue;
-    const scale = h / 1080;
-    ctx.save();
-    ctx.textBaseline = "alphabetic";
-    if (item.style === "title") {
-      ctx.font = `700 ${Math.round(64 * scale)}px Archivo, ui-sans-serif, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.shadowColor = "rgba(0,0,0,.55)";
-      ctx.shadowBlur = 18 * scale;
-      ctx.fillStyle = "#fff";
-      ctx.fillText(item.content, w / 2, h / 2);
-    } else if (item.style === "lower-third") {
-      const pad = 24 * scale;
-      ctx.font = `600 ${Math.round(38 * scale)}px Archivo, ui-sans-serif, sans-serif`;
-      const width = ctx.measureText(item.content).width;
-      const y = h - 140 * scale;
-      ctx.fillStyle = "rgba(12,12,12,.8)";
-      ctx.fillRect(pad, y - 46 * scale, width + pad * 2, 64 * scale);
-      ctx.fillStyle = "#e0a92e";
-      ctx.fillRect(pad, y - 46 * scale, 4 * scale, 64 * scale);
-      ctx.fillStyle = "#fff";
-      ctx.textAlign = "left";
-      ctx.fillText(item.content, pad * 2, y);
-    } else {
-      ctx.font = `500 ${Math.round(34 * scale)}px Archivo, ui-sans-serif, sans-serif`;
-      ctx.textAlign = "center";
-      const width = ctx.measureText(item.content).width;
-      const y = h - 70 * scale;
-      ctx.fillStyle = "rgba(12,12,12,.72)";
-      ctx.fillRect(w / 2 - width / 2 - 16 * scale, y - 34 * scale, width + 32 * scale, 48 * scale);
-      ctx.fillStyle = "#fff";
-      ctx.fillText(item.content, w / 2, y);
-    }
-    ctx.restore();
-  }
 }
 
 export default function Preview() {
@@ -238,57 +200,18 @@ export default function Preview() {
         }
       }
 
-      // Draw in composition coordinates and let one transform apply the
-      // crop, so overlays are reframed by exactly the same maths as the
-      // picture instead of a second, drifting copy of it.
+      // The exporter draws every frame through this same function, so what
+      // plays here is what gets written to the file.
       const { crop: liveCrop, cropping: framing } = frameRef.current;
-      const W = cur.width;
-      const H = cur.height;
-      const vx = framing ? 0 : liveCrop.x;
-      const vy = framing ? 0 : liveCrop.y;
-      const vw = framing ? 1 : liveCrop.w;
-      const k = canvas.width / (W * vw);
-
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = "#0a0a0a";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.setTransform(k, 0, 0, k, -vx * W * k, -vy * H * k);
-
-      // A gap draws no picture, but titles and fades still land on its black.
-      if (v) {
-        const scale = Math.min(W / v.videoWidth, H / v.videoHeight);
-        const dw = v.videoWidth * scale;
-        const dh = v.videoHeight * scale;
-
-        // Zoom scales about its focal point inside the crop: punch in, then reframe.
-        const zoom = zoomAt(cur, t);
-        if (zoom) {
-          ctx.save();
-          const fx = zoom.x * W;
-          const fy = zoom.y * H;
-          ctx.translate(fx, fy);
-          ctx.scale(zoom.scale, zoom.scale);
-          ctx.translate(-fx, -fy);
-        }
-        ctx.drawImage(v, (W - dw) / 2, (H - dh) / 2, dw, dh);
-        if (zoom) ctx.restore();
-      }
-
-      // Titles ride above the zoom — a caption that scales with a punch-in
-      // reads as a mistake, not as an effect.
-      drawText(ctx, cur, t, W, H);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-      // The wash is the last thing drawn, so it covers everything including
-      // overlays, which is what a fade to black means.
-      const fade = fadeAt(cur, t);
-      if (fade) {
-        ctx.save();
-        ctx.globalAlpha = fade.alpha;
-        ctx.fillStyle = fade.color;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.restore();
-      }
+      composeFrame(
+        ctx,
+        cur,
+        t,
+        // A gap draws no picture, but titles and fades still land on its black.
+        v && v.videoWidth ? { source: v, width: v.videoWidth, height: v.videoHeight } : null,
+        { width: canvas.width, height: canvas.height },
+        framing ? FULL_FRAME : liveCrop,
+      );
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
