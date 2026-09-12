@@ -7,6 +7,7 @@ import {
   addEffect, addTrack, deleteClip, makeEffect, moveClip, moveEffect, removeEffect,
   removeTrack, setSpeed, setVideoMuted, splitAt, swapClips, trackOfEffect, trimClipEdge, trimEffect,
 } from "@/lib/edl/ops";
+import { snapInterval, snapPoints, snapTo } from "@/lib/edl/snap";
 import type { Effect, Sound, TrackKind } from "@/lib/edl/types";
 import EffectInspector from "./EffectInspector";
 import {
@@ -51,6 +52,14 @@ const MIN_TICK_PX = 80;
 
 /** The lane label column. Fixed, so every lane starts at the same time zero. */
 const GUTTER = 118;
+
+/**
+ * How near a cut a drag has to come before it catches, in pixels. Measured on
+ * screen rather than in seconds, so the pull feels the same at 1x and at 32x —
+ * and because at a normal zoom a single frame is a fraction of a pixel, which
+ * no hand can land on.
+ */
+const SNAP_PX = 7;
 
 type DragKind = "move" | "start" | "end";
 interface Drag {
@@ -329,6 +338,13 @@ export default function Timeline() {
   /** The clip currently being carried, so it can be drawn as lifted. */
   const [carrying, setCarrying] = useState<string | null>(null);
 
+  /* ----- alignment: lanes only read as one instrument if they line up ----- */
+
+  /** The cut a drag has caught, drawn for as long as it holds. */
+  const [snapped, setSnapped] = useState<number | null>(null);
+  /** The pixel threshold in seconds, at the current zoom. */
+  const snapSec = span && contentW ? (SNAP_PX / contentW) * span : 0;
+
   /**
    * Dragging a clip's body reorders it.
    *
@@ -394,15 +410,26 @@ export default function Timeline() {
       const sourceDur = media.find((m) => m.id === edl.clips.find((c) => c.id === clipId)?.src)?.duration;
       let live = edl;
 
+      // The edge being dragged already sits on a boundary; letting it catch on
+      // itself would read as a handle that will not let go.
+      const here = placed(edl).find((p) => p.clip.id === clipId);
+      const home = edge === "start" ? here?.start : here?.end;
+      const points = snapPoints(edl, { extra: [playhead] }).filter(
+        (p) => home === undefined || Math.abs(p - home) > 1e-6,
+      );
+
       const move = (ev: PointerEvent) => {
         ev.preventDefault();
-        live = trimClipEdge(edl, clipId, edge, timeAt(ev.clientX), sourceDur);
+        const caught = snapTo(timeAt(ev.clientX), points, snapSec);
+        setSnapped(caught.hit);
+        live = trimClipEdge(edl, clipId, edge, caught.t, sourceDur);
         setDraft(live);
       };
       const up = () => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
+        setSnapped(null);
         if (live !== edl) commitDraft("Trim clip");
         else setDraft(null);
       };
@@ -410,7 +437,7 @@ export default function Timeline() {
       window.addEventListener("pointerup", up);
       window.addEventListener("pointercancel", up);
     },
-    [commitDraft, edl, media, select, setDraft, timeAt],
+    [commitDraft, edl, media, playhead, select, setDraft, snapSec, timeAt],
   );
 
   /* ----- effect drag: move the whole item, or trim either edge ----------- */
@@ -424,6 +451,8 @@ export default function Timeline() {
 
       const grabbed = timeAt(e.clientX);
       const offset = grabbed - item.at;
+      // Every cut, the ends of the edit, the playhead, and the other lanes' edges.
+      const points = snapPoints(edl, { extra: [playhead], exceptId: item.id });
       let live: Drag = { id: item.id, kind, at: item.at, dur: item.dur };
       setDrag(live);
 
@@ -431,16 +460,25 @@ export default function Timeline() {
         ev.preventDefault();
         const t = timeAt(ev.clientX);
         if (kind === "move") {
-          live = { ...live, at: Math.max(0, t - offset) };
+          // Either edge can catch: which one the user meant is the nearer one.
+          const caught = snapInterval(Math.max(0, t - offset), live.dur, points, snapSec);
+          live = { ...live, at: Math.max(0, caught.at) };
+          setSnapped(caught.hit);
         } else if (kind === "start") {
           const end = item.at + item.dur;
           // A sound can't start before its own file does, or end after it.
           const floor = isSound(item) ? Math.max(0, item.at - item.in) : 0;
-          const at = Math.max(floor, Math.min(end - 0.08, t));
+          const caught = snapTo(t, points, snapSec);
+          const at = Math.max(floor, Math.min(end - 0.08, caught.t));
           live = { ...live, at, dur: end - at };
+          // A catch the clamps overrode is not a catch, so nothing is drawn.
+          setSnapped(at === caught.hit ? caught.hit : null);
         } else {
           const ceiling = isSound(item) ? item.srcDur - item.in : Number.POSITIVE_INFINITY;
-          live = { ...live, dur: Math.min(ceiling, Math.max(0.08, t - item.at)) };
+          const caught = snapTo(t, points, snapSec);
+          const dur = Math.min(ceiling, Math.max(0.08, caught.t - item.at));
+          live = { ...live, dur };
+          setSnapped(item.at + dur === caught.hit ? caught.hit : null);
         }
         setDrag(live);
       };
@@ -450,6 +488,7 @@ export default function Timeline() {
         window.removeEventListener("pointercancel", up);
         // One version per gesture, not one per pixel.
         setDrag(null);
+        setSnapped(null);
         const noun = isSound(item) ? "sound" : "effect";
         if (kind === "move") {
           if (Math.abs(live.at - item.at) > 1e-4) apply(moveEffect(edl, item.id, live.at), `Move ${noun}`);
@@ -463,7 +502,7 @@ export default function Timeline() {
       window.addEventListener("pointerup", up);
       window.addEventListener("pointercancel", up);
     },
-    [apply, edl, selectEffect, timeAt],
+    [apply, edl, playhead, selectEffect, snapSec, timeAt],
   );
 
   const addLane = (kind: TrackKind) => apply(addTrack(edl, kind), `Add ${kind} track`);
@@ -1073,6 +1112,15 @@ export default function Timeline() {
                       />
                     )}
                     <div className="absolute inset-y-0 w-px bg-ink/80" style={{ left: `${pct(playhead)}%` }} />
+                    {/* What the drag has caught. Dashed and dimmer than the
+                        playhead, so the two are never confused. */}
+                    {snapped !== null && (
+                      <div
+                        data-snap={snapped}
+                        className="absolute inset-y-0 border-l border-dashed border-ink/70"
+                        style={{ left: `${pct(snapped)}%` }}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
