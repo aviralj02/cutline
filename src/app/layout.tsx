@@ -16,8 +16,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Cutline",
-  description: "A video editor where the edit is a document, an agent edits it, and every change is a version.",
+  title: "Cutline — video editor with version control, AI and no sign-up",
+  description:
+    "Edit video in your browser. Cut by hand, go back to any version, and use AI on your own key when you want it. No account, no upload, no server.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

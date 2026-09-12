@@ -1,4 +1,5 @@
 import { chromium } from "playwright-core";
+import fs from "node:fs";
 
 const OUT = process.env.SHOT_DIR ?? "/tmp";
 /** The narrowest window the editor claims to work at. Must match MIN_WIDTH. */
@@ -22,6 +23,16 @@ page.on("console", (m) => m.type() === "error" && log("  [console]", m.text().sl
 await page.goto("http://localhost:3000", { waitUntil: "networkidle" });
 log("\n1. App loads");
 check("dropzone visible", await page.getByText(/Drop a video/).isVisible());
+{
+  // The privacy claim is checkable only if the source is reachable from the app.
+  // Matched by where it goes, not by what it says: the wording is product copy
+  // and will be rewritten, but the destination is the thing being claimed.
+  const source = page.locator('a[href*="github.com"]');
+  const href = (await source.count()) ? await source.first().getAttribute("href") : null;
+  const named = (await source.count()) ? (await source.first().innerText()).trim() : "";
+  check("the start screen links to the source", (await source.count()) === 1 && /github\.com\//.test(href ?? ""), href ?? "no link");
+  check("and the link says where it goes", named.length > 0, named || "no text");
+}
 
 // ---------------------------------------------------------------------------
 // Generate test footage in the page: 20s, with deliberate silent stretches.
@@ -1887,6 +1898,32 @@ log("\n25g. A sound lane, and the original audio muted");
   check("the sound plays when the playhead crosses it", heard);
   check("and stops with the picture", !(await audioPlaying()));
 
+  // --- lanes catch on the edit's landmarks, so tracks line up ---
+  {
+    const clipBox = await page.locator("[data-clip]").first().boundingBox();
+    const cut = clipBox.x + clipBox.width;
+    const from = await item.boundingBox();
+    const grab = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+    // Aim 4px short of the cut: inside the 7px catch, far outside one frame.
+    const pointerStops = cut - 4;
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    await page.mouse.move(grab.x + (pointerStops - from.x), grab.y, { steps: 12 });
+    await page.waitForTimeout(150);
+    const guide = page.locator("[data-snap]");
+    const caught = (await guide.count()) === 1 ? (await guide.first().boundingBox()).x : null;
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const landed = await item.boundingBox();
+    check("a guide marks the landmark a drag has caught", caught !== null);
+    // Either edge may be the one that catches, so the item is checked against
+    // the line it actually caught, not against the cut we aimed at.
+    check("and the item lands on that line, not where the pointer stopped",
+          caught !== null && Math.abs(landed.x - caught) < 1.5 && Math.abs(landed.x - pointerStops) > 1,
+          caught === null ? "nothing caught"
+            : `${(landed.x - caught).toFixed(2)}px from the line, ${(landed.x - pointerStops).toFixed(2)}px from the pointer`);
+  }
+
   // --- the original audio, muted and back ---
   await page.getByRole("button", { name: "Mute original audio" }).click();
   await page.waitForTimeout(300);
@@ -1923,7 +1960,65 @@ log("\n25g. A sound lane, and the original audio muted");
 }
 
 // ---------------------------------------------------------------------------
-log("\n26. New project asks before destroying the work");
+log("\n26. Export writes a real file, in this browser");
+{
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await page.waitForTimeout(500);
+  const offered = await page.evaluate(() => document.querySelector("dialog[open]")?.innerText ?? "");
+  check("the dialog states the picture it will write", /\d+ × \d+ at \d+ fps/.test(offered),
+        offered.replace(/\n/g, " ").slice(0, 80));
+  check("and the container, decided by what this browser can encode", /MP4|WEBM/.test(offered));
+
+  // The file arrives as a real download, the same way a user gets it.
+  const saved = page.waitForEvent("download", { timeout: 240000 });
+  await page.getByRole("button", { name: "Export video" }).click();
+  await page.waitForSelector("text=is ready", { timeout: 240000 });
+  check("the export runs to completion", true);
+
+  await page.getByRole("button", { name: "Save video" }).click();
+  const download = await saved;
+  const bytes = fs.readFileSync(await download.path());
+  check("the saved file is named after the footage",
+        /-cutline\.(mp4|webm)$/.test(download.suggestedFilename()), download.suggestedFilename());
+  check("and holds real encoded bytes", bytes.length > 20000, `${(bytes.length / 1024).toFixed(0)}KB`);
+
+  const mp4 = bytes.subarray(4, 8).toString("latin1") === "ftyp";
+  const webm = bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
+  check("that a player recognises as video", mp4 || webm,
+        mp4 ? "MP4" : webm ? "WebM" : bytes.subarray(0, 8).toString("hex"));
+
+  // Decode it back: a file that will not play is not an export.
+  const played = await page.evaluate(async (b64) => {
+    const bin = atob(b64);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([buf]));
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.src = url;
+    const ok = await new Promise((resolve) => {
+      v.onloadedmetadata = () => resolve(true);
+      v.onerror = () => resolve(false);
+      setTimeout(() => resolve(false), 15000);
+    });
+    const out = { ok, duration: v.duration, width: v.videoWidth, height: v.videoHeight };
+    URL.revokeObjectURL(url);
+    return out;
+  }, bytes.toString("base64"));
+  check("the exported file plays back", played.ok && played.width > 0,
+        `${played.width}x${played.height}, ${played.duration?.toFixed?.(2)}s`);
+  check("at the size the dialog promised",
+        offered.includes(`${played.width} × ${played.height}`), `${played.width} × ${played.height}`);
+  check("and carries the whole edit", played.duration > 0.5 && Number.isFinite(played.duration),
+        `${played.duration?.toFixed?.(2)}s`);
+
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.waitForTimeout(300);
+  check("closing puts the editor back", !(await page.evaluate(() => !!document.querySelector("dialog[open]"))));
+}
+
+// ---------------------------------------------------------------------------
+log("\n27. New project asks before destroying the work");
 {
   const editorOpen = () => page.evaluate(() => document.body.innerText.includes("Timeline"));
   const dialogOpen = () => page.evaluate(() => !!document.querySelector("dialog[open]"));

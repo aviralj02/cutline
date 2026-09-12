@@ -5,6 +5,14 @@
 A browser video editor where the edit is a document, an agent edits that
 document, and every change is a version. Nothing uploads.
 
+**Positioned as: a video editor with version control and no sign-up, that is
+easy to use by hand — with AI available on your own key if you want it.**
+Not as an AI-native editor: the whole editor works with no key and no agent,
+and public copy leads with manual editing, versions and no sign-up, with the
+agent named after them as an option. Those claims are also constraints: an
+account, a hosted project store, a server proxy, or a feature reachable only
+by asking would each break one of them.
+
 **[ARCHITECTURE.md](./ARCHITECTURE.md)** is the short guide to how it works:
 the edit document, the two clocks, how preview reads the edit each frame, where
 decoding happens, versions, the agent, and a glossary with every acronym
@@ -130,6 +138,43 @@ edge) covers every effect, and anything added later inherits it.
 - **Muting the original audio is a document flag** (`videoMuted`, stored only
   while on), so each toggle is a version you can undo. Sound lanes still play.
 
+## Export
+
+The edit becomes a file in the browser, through Mediabunny. Nothing uploads
+here either, and the encode is the preview written down.
+
+- **One renderer, used twice.** `lib/render/compose.ts` draws a frame; Preview
+  calls it every animation frame and the exporter calls it for every frame of
+  the file. A second copy of the crop-zoom-title-fade maths would drift from
+  the one people judged their edit against, and the drift would only show up
+  in the finished file — the worst possible place to find it.
+- **The container is chosen from what the browser can encode**, never assumed.
+  `getEncodableVideoCodecs` decides; MP4/H.264 wins when it is available
+  because it plays everywhere. **Keeping the sound beats keeping the
+  container:** a browser that encodes H.264 but not AAC writes WebM rather
+  than a silent MP4. With no video encoder at all (Firefox Android) the dialog
+  says so instead of failing mid-encode.
+- **Audio is mixed a window at a time** (`WINDOW`, 5s), reading each source
+  range fresh. Memory stays flat whatever the length, which is the same
+  principle the import analysis follows — and the reason neither path decodes
+  a whole file.
+- **`plan.ts` is the document half and holds no browser APIs**, so what a
+  window of sound is made of, whether a file needs an audio track, and which
+  container to write are all unit-tested without a canvas or an encoder.
+- **A clip's speed stretches the source range the audio reads**, exactly as it
+  stretches the picture's timestamps. Sound and picture come apart otherwise,
+  and only on sped-up clips.
+- **Stop means stop.** The dialog's signal aborts the loop, and the output is
+  cancelled rather than finalized, so a stopped export leaves no half-written
+  file.
+- **The export is frame-exact even though the preview is not.** Frames come
+  from Mediabunny's `CanvasSink` (WebCodecs), not from the `<video>` element
+  the preview draws, so it does not inherit the browser's ~50ms seek slop.
+- **The finished file is held in memory** (`BufferTarget`), which is the known
+  ceiling on a very long export. Writing straight to disk needs
+  `showSaveFilePicker` and a `StreamTarget`, and that is the next thing to do
+  here, not a rewrite of the loop.
+
 ## Rules that are load-bearing
 
 - **Ops are pure.** Every function in `edl/ops.ts` returns a new document and
@@ -165,6 +210,17 @@ edge) covers every effect, and anything added later inherits it.
   the edit's length. A slug plays as black, is never left at the end, and is
   closed by selecting it and deleting it. The ripple trim this replaced pulled
   every later clip along, so trimming a head read as the wrong edge moving.
+- **Drags catch on the edit's own landmarks.** Every cut, both ends of the
+  edit, the playhead and the other lanes' item edges pull a drag in from
+  `SNAP_PX` (7) away. The threshold is in **pixels, not seconds**, so the pull
+  feels identical at 1× and at 32× — and at a normal zoom one frame is a
+  fraction of a pixel, which no hand can land on unaided. This is what keeps a
+  fade on the cut it belongs to: a lane a few milliseconds off looks fine on
+  the timeline and shows as a sliver in the export. **A dragged edge never
+  catches on where it already sits** (`exceptId` for a lane item, and the clip
+  trim drops its own boundary), or the handle reads as stuck for the first 7px.
+  A catch that a clamp then overrode draws no guide, because nothing caught.
+  `snap.ts` is pure, so all of it is tested without a pointer.
 - **Register a global shortcut listener once.** `Timeline`'s keydown effect
   depended on `edl`, so it re-registered on every edit — and that silently ate
   every arrow key. `Transport` owns a window keydown listener too and mounts
@@ -335,9 +391,12 @@ names describing the role they play here rather than the library's noun, so
 swapping one is a single line. Do not author an SVG icon; if lucide lacks a
 glyph, add the closest one and note it.
 
-Three authored SVGs are deliberate and are not icons: the logo mark
-(`ui/Logo.tsx`), its favicon (`app/icon.svg`), and the timeline waveform, which
-is geometry plotted from the actual audio.
+Four authored SVGs are deliberate and are not icons: the logo mark
+(`ui/Logo.tsx`), its favicon (`app/icon.svg`), the timeline waveform, which is
+geometry plotted from the actual audio, and `GithubIcon` — a brand mark, which
+lucide does not carry. A link to the source is recognised by that shape or not
+at all, so the closest generic glyph would defeat the point of showing it. That
+is the exception, not a licence to draw icons.
 
 ### Waveforms
 
@@ -362,6 +421,33 @@ draws a normally recorded voice — which peaks around 0.18, nowhere near full
 scale — as a flat 20% smudge that looks like a texture rather than audio. Files
 peaking below 0.02 are left unscaled so room tone is not amplified into a
 waveform that is not there.
+
+### Motion
+
+Motion is rare here and always answers something. There are three authored
+moments and no others: a dialog arrives rather than blinks, the editor
+assembles once after import (`gate-in`), and the start screen's sprocket strip
+carries the state of the gate.
+
+**The perforations are the start screen's motion system**, because they are the
+one element that belongs to this product and no other. Still when there is no
+film, advanced by exactly one pitch the moment a file is dragged over, running
+while the import reads it, still again when it is done. A spinner would say
+"working" in anyone's product; this says it in ours. The strip repeats on a
+fixed pitch (`PITCH`, 21px — a hole plus its gap) so the loop has no seam, and
+it is clipped by the gate rather than ending inside it.
+
+The start screen settles in three steps — the claim, the gate, the detail —
+with delay capped at 170ms. Longer reads as a performance rather than an
+arrival, and every step starts from a visible default so a stylesheet that
+never loads cannot hide the page. `prefers-reduced-motion` cuts all of it in
+`globals.css`, which is why the import's status text has to carry the meaning
+the running strip otherwise would.
+
+**The gate draws its own focus ring.** Its file input is `sr-only`, so the
+global `:focus-visible` outline lands on something nobody can see; without
+`focus-within` on the label, the keyboard path to the one action on the screen
+is invisible.
 
 ### Layout
 
@@ -428,8 +514,8 @@ missing. Errors say what went wrong and how to fix it.
 ## Verification
 
 ```bash
-bun test                    # 199 unit tests: edit algebra, effects, sound, trim and gaps, undo, variants, DSP, agent tools, BYOK
-bun test/e2e/verify.mjs     # 232 checks in real Chrome — records its own test clip
+bun test                    # 240 unit tests: edit algebra, effects, sound, trim and gaps, snapping, undo, variants, DSP, agent tools, export planning, BYOK
+bun test/e2e/verify.mjs     # 246 checks in real Chrome — records its own test clip, and exports one back out
 bun test/e2e/shots.mjs      # screenshots both screens for design review
 ```
 
@@ -494,10 +580,6 @@ missing reference marker for exactly this reason.
 
 ## Not built yet
 
-- **Export.** Mediabunny's `Output` + `CanvasSource`, client-side. Gate it on a
-  capability check: Safari below 26 cannot encode audio, Firefox Android has no
-  WebCodecs. It must honour `outputSize()` and the crop transform — the preview
-  already renders through exactly the maths the encoder needs.
 - **Transcription.** `toWav16k` is written and tested; no route consumes it. It
   is what lets the agent act on words rather than only on silence.
 - **Text overlays.** The document's `text` field, `addText` and the renderer

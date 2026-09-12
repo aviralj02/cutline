@@ -25,12 +25,26 @@ List)**, in `src/lib/edl/types.ts`:
 
 ```jsonc
 {
-  "fps": 30, "width": 1920, "height": 1080,
-  "clips":  [ { "id": "a", "src": "m1", "in": 12.4, "out": 48.9 } ],  // play file m1 from 12.4s to 48.9s
-  "text":   [ { "id": "t1", "at": 1, "dur": 3, "content": "Intro", "style": "title" } ],
-  "crop":   { "x": 0.34, "y": 0, "w": 0.32, "h": 1 },                  // fractions of the frame
-  "tracks": [ { "kind": "zoom", "items": [ { "at": 5, "dur": 2, "scale": 1.4, "x": 0.6, "y": 0.4, "ramp": 0.4 } ] },
-              { "kind": "fade", "items": [ { "at": 38, "dur": 1, "mode": "out", "color": "#000000" } ] } ]
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "clips": [{ "id": "a", "src": "m1", "in": 12.4, "out": 48.9 }], // play file m1 from 12.4s to 48.9s
+  "text": [
+    { "id": "t1", "at": 1, "dur": 3, "content": "Intro", "style": "title" },
+  ],
+  "crop": { "x": 0.34, "y": 0, "w": 0.32, "h": 1 }, // fractions of the frame
+  "tracks": [
+    {
+      "kind": "zoom",
+      "items": [
+        { "at": 5, "dur": 2, "scale": 1.4, "x": 0.6, "y": 0.4, "ramp": 0.4 },
+      ],
+    },
+    {
+      "kind": "fade",
+      "items": [{ "at": 38, "dur": 1, "mode": "out", "color": "#000000" }],
+    },
+  ],
 }
 ```
 
@@ -39,7 +53,7 @@ Everything follows from this:
 - **Preview** reads the document and draws it, live (section 4).
 - **Versions** are snapshots of the document (section 6).
 - **The agent** edits the document with the same functions you do (section 7).
-- **Export** (not built yet) will read the same document and encode a file.
+- **Export** reads the same document and encodes a file (section 5).
 
 ## 2. Two clocks
 
@@ -70,18 +84,19 @@ Every edit is a pure function in `src/lib/edl/ops.ts`: it takes a document and
 returns a new one, with no I/O (input/output). Each ends in `normalize()`, which
 snaps every time to a frame boundary, so identical edits produce identical JSON.
 
-| You do | Function | What changes in the document |
-|---|---|---|
-| Split at the playhead | `splitAt` | One clip becomes two windows onto the same file |
-| Delete a clip or a span | `deleteClip`, `rippleDelete` | Clip windows shrink; everything after slides left |
-| Drag a clip's edge | `trimClipEdge` | That clip's `in` or `out`; a slug takes the freed space, so nothing else moves |
-| Close a gap | `deleteClip` on the slug | The slug goes; everything after slides left |
-| Add a sound | `addSound` | An item on the sound lane: its file, where it starts, how far into the file |
-| Mute the original audio | `setVideoMuted` | `videoMuted`; sound lanes still play |
-| Drag a clip to a new slot | `moveClip` | Its position in the `clips` array |
-| Change speed | `setSpeed` | `speed`; a 2× clip takes half the timeline |
-| Crop to 9:16 | `setCropAspect` | `crop` |
-| Add a fade or zoom | `addEffect` | An interval on that kind's lane in `tracks` |
+| You do                    | Function                     | What changes in the document                                                   |
+| ------------------------- | ---------------------------- | ------------------------------------------------------------------------------ |
+| Split at the playhead     | `splitAt`                    | One clip becomes two windows onto the same file                                |
+| Delete a clip or a span   | `deleteClip`, `rippleDelete` | Clip windows shrink; everything after slides left                              |
+| Drag a clip's edge        | `trimClipEdge`               | That clip's `in` or `out`; a slug takes the freed space, so nothing else moves |
+| Close a gap               | `deleteClip` on the slug     | The slug goes; everything after slides left                                    |
+| Add a sound               | `addSound`                   | An item on the sound lane: its file, where it starts, how far into the file    |
+| Mute the original audio   | `setVideoMuted`              | `videoMuted`; sound lanes still play                                           |
+| Drag a clip to a new slot | `moveClip`                   | Its position in the `clips` array                                              |
+| Change speed              | `setSpeed`                   | `speed`; a 2× clip takes half the timeline                                     |
+| Crop to 9:16              | `setCropAspect`              | `crop`                                                                         |
+| Add a fade or zoom        | `addEffect`                  | An interval on that kind's lane in `tracks`                                    |
+
 ## 4. Live preview: who reads the edit
 
 There is no render step. A loop in `src/components/Preview.tsx` re-reads the
@@ -131,15 +146,19 @@ canvas, in a fixed order:
 - **Effects are arithmetic, not stored frames.** `zoomAt` eases the scale over
   `ramp` seconds with smoothstep; `fadeAt` turns "how far through the fade" into
   an opacity.
+- **Export draws with this same function.** Steps 1 to 5 above live in
+  `composeFrame` (`src/lib/render/compose.ts`), which the preview calls every
+  frame and the encoder calls for every frame of the file — so the export is
+  the preview written down, not a second renderer to keep in step.
 
 Other parts of the screen read the same document:
 
-| Reader | Uses it for |
-|---|---|
-| `Timeline.tsx` | Clip blocks, effect lanes, the ruler |
-| `Transport.tsx` | Duration and timecode |
-| `History.tsx` | "−1 clip, −4.0s" between versions |
-| The agent | A text description of it (`describeState`), then tools |
+| Reader          | Uses it for                                            |
+| --------------- | ------------------------------------------------------ |
+| `Timeline.tsx`  | Clip blocks, effect lanes, the ruler                   |
+| `Transport.tsx` | Duration and timecode                                  |
+| `History.tsx`   | "−1 clip, −4.0s" between versions                      |
+| The agent       | A text description of it (`describeState`), then tools |
 
 ## 5. Where video is decoded, and WebCodecs
 
@@ -148,11 +167,11 @@ A **container** (MP4, WebM) holds **streams** compressed with a **codec**
 without decompressing; **decoding** decompresses them into raw frames or audio
 samples. Cutline decodes in three places, for three jobs:
 
-| Job | Decoder | Why |
-|---|---|---|
-| **Preview** | The browser's `<video>` element | Hardware accelerated; Cutline only draws it onto the canvas |
-| **Import** | **WebCodecs**, through the **Mediabunny** library | Needs real audio samples to find silence and draw the waveform |
-| **Export** (not built) | WebCodecs encoders, through Mediabunny | Turns the drawn canvas back into a compressed file |
+| Job         | Decoder                                           | Why                                                            |
+| ----------- | ------------------------------------------------- | -------------------------------------------------------------- |
+| **Preview** | The browser's `<video>` element                   | Hardware accelerated; Cutline only draws it onto the canvas    |
+| **Import**  | **WebCodecs**, through the **Mediabunny** library | Needs real audio samples to find silence and draw the waveform |
+| **Export**  | WebCodecs encoders, through Mediabunny            | Turns the drawn canvas back into a compressed file             |
 
 **Import** (`src/lib/media/analyze.ts`):
 
@@ -170,11 +189,30 @@ Silences are stored raw, in source time, so the agent can choose its own
 minimum length and padding without re-reading the audio. Codecs WebCodecs won't
 decode fall back to the Web Audio decoder, which reads the whole track at once.
 
-**Export** will run the preview loop once per output frame: draw a frame at
-`outputSize()`, hand the canvas to a WebCodecs video encoder, decode and mix
-each clip's audio into an audio encoder, and let Mediabunny write the MP4. It
-needs a capability check: Safari below 26 can't encode audio, and Firefox on
-Android has no WebCodecs.
+**Export** (`src/lib/export/`) runs the preview's own renderer once per output
+frame:
+
+```
+for each frame of the edit:
+   the clip's file → Mediabunny CanvasSink → the frame at that source time
+   composeFrame(...) draws it at outputSize(), with crop, zoom, titles, fade
+   → CanvasSource: the WebCodecs video encoder
+then, five seconds at a time:
+   audioPieces(edl, from, to) says which file, which range, at what volume
+   → read, resample to 48kHz stereo, mix, clamp → the audio encoder
+→ Mediabunny writes the MP4 (or WebM), and you save it
+```
+
+The container comes from what this browser can actually encode: MP4 with
+H.264 when it is available because it plays everywhere, WebM otherwise, and
+the sound is kept in preference to the container. Safari below 26 can't encode
+audio and Firefox on Android has no WebCodecs at all, so the dialog says what
+it is able to write before it starts. Memory stays flat because audio is mixed
+a window at a time, the same reason import streams its analysis.
+
+`plan.ts` holds the half that is decided by the document alone — how many
+frames, which source range feeds each moment of sound, which container — with
+no browser APIs in it, so all of that is tested without an encoder.
 
 **Limits of this approach.** Seeking is only as exact as the browser's (the
 preview re-seeks when it's more than 50ms off), a cut can stutter on large files
@@ -233,11 +271,11 @@ your request
 
 Everything stays on the device.
 
-| What | Where | Why there |
-|---|---|---|
-| Footage | OPFS | Real files, written as a stream; up to 4 GB each, within the browser's storage quota |
-| Project: versions, analysis, waveforms | IndexedDB | A structured database that survives reloads |
-| API key and model | localStorage, or sessionStorage | Remembered on this device, or gone when the tab closes; never with the project |
+| What                                   | Where                           | Why there                                                                            |
+| -------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------ |
+| Footage                                | OPFS                            | Real files, written as a stream; up to 4 GB each, within the browser's storage quota |
+| Project: versions, analysis, waveforms | IndexedDB                       | A structured database that survives reloads                                          |
+| API key and model                      | localStorage, or sessionStorage | Remembered on this device, or gone when the tab closes; never with the project       |
 
 New project clears OPFS and IndexedDB, after a confirmation. It leaves the key.
 
@@ -247,6 +285,8 @@ New project clears OPFS and IndexedDB, after a confirmation. It leaves the key.
 src/lib/edl/          the document: types, pure edit functions, the two clocks   ← start here
 src/lib/vcs/          versions, variants, undo, the semantic diff
 src/lib/media/        OPFS storage, demuxing, audio analysis, silence
+src/lib/render/       composeFrame: one frame of the edit, for preview and export
+src/lib/export/       the document half of an export, and the encoder itself
 src/lib/agent/        the agent's tools: pure functions over the document
 src/lib/ai/           bring your own key: providers, the loop, the two wires, key storage
 src/lib/store.ts      app state, drafts, running the agent
@@ -259,22 +299,22 @@ src/components/ui/    design primitives: compose these, don't restyle
 
 **Acronyms**
 
-| Term | Stands for | Here |
-|---|---|---|
-| EDL | Edit Decision List | The JSON document that is the edit |
-| OPFS | Origin Private File System | Browser-private disk where footage is stored |
-| API | Application Programming Interface | How the app talks to a model provider |
-| BYOK | Bring Your Own Key | Users supply their own provider key |
-| SDK | Software Development Kit | Anthropic's official client library |
-| CORS | Cross-Origin Resource Sharing | The browser rule a provider must allow for direct calls |
-| I/O | Input/Output | What edit functions never do |
-| fps | Frames per second | Read from the file, never assumed |
-| VFR | Variable Frame Rate | Screen recordings; an average rate is used |
-| PCM | Pulse-Code Modulation | Raw, uncompressed audio samples |
-| RMS | Root Mean Square | Loudness over a short window |
-| dBFS | Decibels relative to Full Scale | Loudness scale; 0 is the loudest possible |
-| DAG | Directed Acyclic Graph | The shape of a version history with variants |
-| rAF | requestAnimationFrame | The browser's once-per-frame callback the preview runs on |
+| Term | Stands for                        | Here                                                      |
+| ---- | --------------------------------- | --------------------------------------------------------- |
+| EDL  | Edit Decision List                | The JSON document that is the edit                        |
+| OPFS | Origin Private File System        | Browser-private disk where footage is stored              |
+| API  | Application Programming Interface | How the app talks to a model provider                     |
+| BYOK | Bring Your Own Key                | Users supply their own provider key                       |
+| SDK  | Software Development Kit          | Anthropic's official client library                       |
+| CORS | Cross-Origin Resource Sharing     | The browser rule a provider must allow for direct calls   |
+| I/O  | Input/Output                      | What edit functions never do                              |
+| fps  | Frames per second                 | Read from the file, never assumed                         |
+| VFR  | Variable Frame Rate               | Screen recordings; an average rate is used                |
+| PCM  | Pulse-Code Modulation             | Raw, uncompressed audio samples                           |
+| RMS  | Root Mean Square                  | Loudness over a short window                              |
+| dBFS | Decibels relative to Full Scale   | Loudness scale; 0 is the loudest possible                 |
+| DAG  | Directed Acyclic Graph            | The shape of a version history with variants              |
+| rAF  | requestAnimationFrame             | The browser's once-per-frame callback the preview runs on |
 
 **Editing**
 
@@ -284,6 +324,10 @@ src/components/ui/    design primitives: compose these, don't restyle
 - **Trim:** move one edge of a clip or effect. Nothing else moves; a slug fills
   any space the trim frees.
 - **Slug:** blank leader. How a gap is stored on the track: a clip with no file.
+- **Snapping:** a drag catches on the edit's landmarks — every cut, both ends,
+  the playhead, and the other lanes' edges — from 7 pixels away, with a dashed
+  guide while it holds. It is how a fade lands exactly on the cut it belongs
+  to (`src/lib/edl/snap.ts`).
 - **Sound lane:** music or other audio files under the picture. Each item is a
   window onto its file: where it starts on the timeline (`at`), how long it
   plays (`dur`) and from how far into the file (`in`).
@@ -316,23 +360,3 @@ src/components/ui/    design primitives: compose these, don't restyle
   cuts and deletion only.
 - **Draft:** an unsaved edit shown live during a drag.
 - **Transport:** the play controls.
-
-## Footguns
-
-Each of these was a real bug here.
-
-1. **Mixing source and timeline time.** Convert through `query.ts`.
-2. **Deleting overlapping ranges one by one.** It eats what's between them; merge first (`mergeRanges`).
-3. **Deleting ranges front to back.** Earlier cuts shift later ones; go back to front.
-4. **Skipping `normalize()`.** Float drift makes identical edits look different.
-5. **Saving a version per input event.** One slider pull made about 100 versions; use the draft.
-6. **Reading coded dimensions.** Portrait phone video imports sideways; demux for display size.
-7. **Scaling the waveform by absolute level.** Speech draws as a flat smudge; normalise per file.
-8. **Changing layout height mid-gesture.** The timeline jumps out from under the pointer.
-9. **Trusting an effect renders because its UI exists.** Sample canvas pixels, off-centre.
-10. **Decoding a whole audio track.** An hour of audio used to crash import at 1.4GB; stream it.
-11. **Assuming audio starts at zero.** Place the loudness curve at the track's own offset.
-12. **`h-full` on a flex item.** It collapses to the content's height; use `self-stretch`.
-13. **Trusting the platform to show a scrollbar.** macOS hides them; draw the position.
-14. **Re-registering a global key listener per edit.** Keys get lost mid-dispatch; register once.
-15. **Measuring an element once on mount when it can be replaced.** Use a callback ref.

@@ -47,13 +47,23 @@ await page.waitForSelector("text=Timeline", { timeout: 45000 });
 await page.waitForTimeout(2500);
 
 // Put the playhead mid-clip and select a clip so the editor looks in use.
-const track = page.locator(".cursor-ew-resize");
-const box = await track.boundingBox();
+// The ruler by name, not by cursor class: trim handles carry that class too.
+const ruler = page.getByRole("slider", { name: "Playhead" });
+const box = await ruler.boundingBox();
 await page.mouse.click(box.x + box.width * 0.42, box.y + box.height / 2);
+await page.waitForTimeout(300);
+await page.locator("[data-clip]").first().click();
 await page.waitForTimeout(400);
 await page.getByRole("button", { name: /^Split/ }).click();
 await page.waitForTimeout(600);
 await page.screenshot({ path: `${OUT}/ui-editor.png` });
+
+// The one place an edit becomes a file.
+await page.getByRole("button", { name: "Export", exact: true }).click();
+await page.waitForTimeout(600);
+await page.screenshot({ path: `${OUT}/ui-export.png` });
+await page.keyboard.press("Escape");
+await page.waitForTimeout(300);
 
 // Crop mode, with a preset applied so the handles sit on a real framing.
 await page.getByRole("button", { name: "Crop" }).click();

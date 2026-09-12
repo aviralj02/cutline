@@ -2,6 +2,23 @@
   "name": "cutline",
   "version": "0.1.0",
   "private": true,
+  "description": "A video editor in your browser — version control, AI on your own key, and no sign-up.",
+  "keywords": [
+    "video-editor",
+    "browser",
+    "webcodecs",
+    "version-control",
+    "ai",
+    "no-signup",
+    "local-first",
+    "open-source"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aviralj02/cutline.git"
+  },
+  "homepage": "https://github.com/aviralj02/cutline#readme",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
