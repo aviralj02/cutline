@@ -19,8 +19,10 @@ import {
   VolumeX,
   Square,
   ChevronLast,
+  Clapperboard,
   Crop,
   Crosshair,
+  Download,
   Delete,
   FilePlus2,
   FolderPlus,
@@ -93,6 +95,8 @@ export const AddMediaIcon = (p: IconProps) => <FilePlus2 {...line} {...p} />;
 export const UndoActionIcon = (p: IconProps) => <Undo2 {...line} {...p} />;
 export const RedoActionIcon = (p: IconProps) => <Redo2 {...line} {...p} />;
 export const NewProjectIcon = (p: IconProps) => <FolderPlus {...line} {...p} />;
+export const ExportIcon = (p: IconProps) => <Clapperboard {...line} {...p} />;
+export const SaveIcon = (p: IconProps) => <Download {...line} {...p} />;
 
 /* The agent's controls. Stop is solid, like the transport marks it sits beside. */
 export const StopIcon = (p: IconProps) => <Square {...solid} {...p} />;

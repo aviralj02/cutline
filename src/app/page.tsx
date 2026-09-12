@@ -8,7 +8,8 @@ import Transport from "@/components/Transport";
 import Chat from "@/components/Chat";
 import DesktopOnly, { MIN_WIDTH, useWindowWidth } from "@/components/DesktopOnly";
 import History from "@/components/History";
-import { Button, ConfirmDialog, IconButton, Logo, NewProjectIcon, RedoActionIcon, UndoActionIcon } from "@/components/ui";
+import ExportDialog from "@/components/ExportDialog";
+import { Button, ConfirmDialog, ExportIcon, IconButton, Logo, NewProjectIcon, RedoActionIcon, UndoActionIcon } from "@/components/ui";
 import { edlOf } from "@/lib/store";
 import { MAX_FILE_BYTES, humanBytes } from "@/lib/media/opfs";
 import * as vcs from "@/lib/vcs/repo";
@@ -130,6 +131,7 @@ export default function Page() {
   const edl = edlOf(repo);
   const canUndo = !!repo && vcs.canUndo(repo);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // Which rail panels are open: a per-viewer convenience, remembered in this browser.
   const [rail, setRail] = useState({ ask: true, versions: true });
@@ -220,6 +222,10 @@ export default function Page() {
             <Button onClick={() => setConfirmingReset(true)} icon={<NewProjectIcon />}>
               New project
             </Button>
+            {/* The one action that turns the edit into a file, so it takes the primary treatment. */}
+            <Button variant="primary" onClick={() => setExporting(true)} icon={<ExportIcon size={13} />}>
+              Export
+            </Button>
           </div>
         )}
       </header>
@@ -253,6 +259,10 @@ export default function Page() {
           </>
         }
       />
+
+      {/* Mounted only while open: a closed dialog's text still answers text
+          queries, and its length row shadowed the timeline's own timecode. */}
+      {exporting && <ExportDialog open onClose={() => setExporting(false)} />}
 
       {!ready ? (
         <div className="grid flex-1 place-items-center text-[12px] text-ink-3">Loading</div>
