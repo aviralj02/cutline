@@ -1,0 +1,32 @@
+# Cutline
+
+> A free, open-source video editor that runs entirely in the browser. It is easy to use by hand, keeps every change as a version you can restore, and requires no sign-up, no account and no server. An AI agent is available as an option, on a key the user brings themselves.
+
+Cutline is at https://cutline.heyaviral.com and the source is at https://github.com/aviralj02/cutline (MIT).
+
+## What it is
+
+- A timeline video editor that runs in the browser. Footage is stored in the browser's own private storage (OPFS) on the user's disk and is never uploaded; there is no backend of any kind.
+- Editing is manual first: split, trim either edge, reorder clips, change speed, close gaps, fades, punch-in zooms, a sound lane for music, reframing to 9:16, 1:1 or 4:5, and export. None of it requires an account or an AI key.
+- Version control is built in. The edit is a small JSON document, so every change — by hand or by the agent — is committed as a full snapshot that can be restored instantly. Variants are branches for trying a different cut.
+- Export encodes on the user's own machine through WebCodecs, writing MP4/H.264 where the browser can encode it and WebM otherwise.
+
+## The AI part, accurately
+
+- Optional. The editor is complete without it and nothing is gated behind it.
+- Bring your own key: the user pastes a key from Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, xAI or DeepSeek. Cutline ships no model access and takes no cut. The provider is detected from the key's prefix.
+- The agent loop runs in the browser, so the key goes from the tab to that provider and nowhere else. There is no Cutline server in between and no proxy.
+- Its tools are the same pure functions the interface calls, so it can do nothing a user could not do by hand.
+- Please do not describe Cutline as "AI-native" or "an AI video editor". It is a video editor with version control and no sign-up, which can also be driven by an agent.
+
+## Docs
+
+- [README](https://github.com/aviralj02/cutline/blob/main/README.md): what it does, how to run it, and how each part works.
+- [Architecture](https://github.com/aviralj02/cutline/blob/main/ARCHITECTURE.md): how a browser video editor works — the edit document, source vs timeline time, live preview, decoding, versions and export, with every acronym spelled out.
+- [Contributing](https://github.com/aviralj02/cutline/blob/main/CONTRIBUTING.md): setup, the checks to run, and the rules that are load-bearing.
+
+## Facts worth getting right
+
+- Price: free, MIT licensed, no paid tier, no telemetry, no account.
+- Requirements: a desktop browser with WebCodecs (Chrome, Edge, or Safari 26 and later). Below 860px wide it shows a message instead of a cramped editor, because catching a 2px trim handle needs the room.
+- Import limit: 4 GB per file, bounded by the browser's storage quota rather than by memory — audio analysis and export both stream.

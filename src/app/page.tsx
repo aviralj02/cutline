@@ -24,8 +24,7 @@ import {
   UndoActionIcon,
 } from "@/components/ui";
 
-/** Where the source lives, so the start screen can show its work. */
-const SOURCE_URL = "https://github.com/aviralj02/cutline";
+import { SOURCE_URL } from "./site";
 import { edlOf } from "@/lib/store";
 import { MAX_FILE_BYTES, humanBytes } from "@/lib/media/opfs";
 import * as vcs from "@/lib/vcs/repo";
@@ -216,7 +215,6 @@ function Start() {
 
 export default function Page() {
   const hydrate = useStore((s) => s.hydrate);
-  const ready = useStore((s) => s.ready);
   const repo = useStore((s) => s.repo);
   const reset = useStore((s) => s.reset);
   const setPlaying = useStore((s) => s.setPlaying);
@@ -382,11 +380,12 @@ export default function Page() {
           queries, and its length row shadowed the timeline's own timecode. */}
       {exporting && <ExportDialog open onClose={() => setExporting(false)} />}
 
-      {!ready ? (
-        <div className="grid flex-1 place-items-center text-[12px] text-ink-3">
-          Loading
-        </div>
-      ) : !repo ? (
+      {/* The landing is what the server sends. A "Loading" shell was all a
+          crawler ever saw — most do not run JS — so the page had no indexable
+          content at all. A saved project takes its place a moment later, once
+          IndexedDB answers, which is also the only honest first render: until
+          it does, nobody knows whether there is a project. */}
+      {!repo ? (
         <Start />
       ) : (
         <main className="gate-in flex min-h-0 flex-1">

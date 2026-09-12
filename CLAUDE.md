@@ -175,6 +175,34 @@ here either, and the encode is the preview written down.
   `showSaveFilePicker` and a `StreamTarget`, and that is the next thing to do
   here, not a rewrite of the loop.
 
+## Discovery
+
+It deploys to `https://cutline.heyaviral.com` and has exactly one route, so
+the whole search surface is small — and therefore has to be exact.
+
+- **`src/app/site.ts` is the only place the product describes itself.** The
+  metadata, sitemap, robots, manifest and JSON-LD all read from it. Six copies
+  of a tagline drift within a week.
+- **The landing must render on the server.** `page.tsx` renders `Start` until
+  a project loads rather than a "Loading" placeholder. That placeholder *was*
+  the entire server response: no heading, no copy, no link, nothing to index —
+  and most crawlers, nearly all LLM crawlers among them, never run the JS that
+  would have filled it in. Do not put a loading gate above the landing again.
+  The cost is that a returning project appears a moment after the landing,
+  which is honest: until IndexedDB answers, nobody knows there is one.
+- **`public/llms.txt` states the product in the words we want repeated**,
+  including that Cutline is *not* "AI-native". Assistants quote this; keep it
+  true, keep it short, and update it when the positioning moves.
+- **`robots.ts` names the AI crawlers** as well as allowing `*`, because being
+  quotable by an assistant is how a tool like this gets found now.
+- **The OG card is a real screenshot of the landing's hero**
+  (`app/opengraph-image.png`, 1200×630): the headline, the subhead and the
+  gate, captured at 1000×525 and scaled 1.2 so it stays legible at thumbnail
+  size, with the feature row and source chip hidden for the crop — at that
+  height they land on the bottom edge, and a card that slices a control in
+  half reads as a mistake. A real screenshot, not a synthetic graphic.
+  Regenerate it when the landing changes.
+
 ## Rules that are load-bearing
 
 - **Ops are pure.** Every function in `edl/ops.ts` returns a new document and
