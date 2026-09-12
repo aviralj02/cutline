@@ -106,3 +106,21 @@ dialog[open]::backdrop { animation: backdrop-in .18s ease-out both; }
   to   { opacity: 1; transform: none; }
 }
 .gate-in { animation: gate-in .32s cubic-bezier(.2,.7,.3,1) both; }
+
+/* The start screen arrives in three steps — the claim, the gate it is about,
+   then the detail. Capped at 170ms of delay, so it settles rather than
+   performs, and every step starts from a visible default if CSS is all that
+   loads. */
+@keyframes settle {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+.settle { animation: settle .36s cubic-bezier(.16,1,.3,1) both; }
+
+/* Film advancing through the gate, and the only motion on that screen. One
+   pitch is a hole plus its gap, so the strip repeats exactly and the loop has
+   no seam. It runs only while an import is actually working. */
+@keyframes thread {
+  to { transform: translateX(calc(var(--pitch) * -1)); }
+}
+.threading { animation: thread .9s linear infinite; }

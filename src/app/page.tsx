@@ -6,25 +6,69 @@ import Preview from "@/components/Preview";
 import Timeline from "@/components/Timeline";
 import Transport from "@/components/Transport";
 import Chat from "@/components/Chat";
-import DesktopOnly, { MIN_WIDTH, useWindowWidth } from "@/components/DesktopOnly";
+import DesktopOnly, {
+  MIN_WIDTH,
+  useWindowWidth,
+} from "@/components/DesktopOnly";
 import History from "@/components/History";
 import ExportDialog from "@/components/ExportDialog";
-import { Button, ConfirmDialog, ExportIcon, IconButton, Logo, NewProjectIcon, RedoActionIcon, UndoActionIcon } from "@/components/ui";
+import {
+  Button,
+  ConfirmDialog,
+  ExportIcon,
+  GithubIcon,
+  IconButton,
+  Logo,
+  NewProjectIcon,
+  RedoActionIcon,
+  UndoActionIcon,
+} from "@/components/ui";
+
+/** Where the source lives, so the start screen can show its work. */
+const SOURCE_URL = "https://github.com/aviralj02/cutline";
 import { edlOf } from "@/lib/store";
 import { MAX_FILE_BYTES, humanBytes } from "@/lib/media/opfs";
 import * as vcs from "@/lib/vcs/repo";
+
+/** A hole plus its gap. Real film has one pitch, and a repeat on it has no seam. */
+const PITCH = 21;
 
 /**
  * Sprocket perforations. A hole only reads as a hole if the strip around it
  * is lighter than the hole, so the band is raised and the holes drop to the
  * app background.
+ *
+ * The strip carries this screen's only motion, and it means what it does on a
+ * real gate: still until there is film, advanced by one frame the moment the
+ * film is over it, running while it is being read.
  */
-function Perforations({ count = 20 }: { count?: number }) {
+function Perforations({ state }: { state: "still" | "threaded" | "running" }) {
   return (
-    <div className="flex items-center justify-between bg-[#272727] px-3 py-[5px]" aria-hidden="true">
-      {Array.from({ length: count }, (_, i) => (
-        <span key={i} className="h-[9px] w-[13px] rounded-[2px] bg-shell" />
-      ))}
+    <div
+      className="overflow-hidden bg-[#272727] px-3 py-[5px]"
+      aria-hidden="true"
+    >
+      <div
+        style={
+          { "--pitch": `${PITCH}px`, gap: PITCH - 13 } as React.CSSProperties
+        }
+        className={`flex items-center transition-transform duration-300 ease-[cubic-bezier(.16,1,.3,1)] ${
+          state === "running"
+            ? "threading"
+            : state === "threaded"
+              ? "-translate-x-[21px]"
+              : ""
+        }`}
+      >
+        {/* Enough to overflow the widest the gate gets, so the strip is cut off
+            by the frame rather than ending inside it. */}
+        {Array.from({ length: 34 }, (_, i) => (
+          <span
+            key={i}
+            className="h-[9px] w-[13px] shrink-0 rounded-[2px] bg-shell"
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -43,21 +87,29 @@ function Start() {
     [importFile],
   );
 
+  // Still, threaded, running: the gate's three states, and the strip says which.
+  const gate = busy ? "running" : over ? "threaded" : "still";
+
   return (
     <div className="flex flex-1 items-center justify-center px-6">
       <div className="w-full max-w-[560px]">
-        <h1 className="text-[27px] font-semibold leading-[1.15] tracking-[-.025em] text-ink">
-          Every edit is a version
-          <br />
-          you can go back to.
-        </h1>
-        <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-ink-2">
-          Drop in a video. Cutline reads the audio as it imports, so it already knows
-          where the dead air is when you ask it to cut.
-        </p>
+        <div className="settle">
+          <h1 className="text-[27px] font-semibold leading-[1.15] tracking-[-.025em] text-balance text-ink">
+            Every edit is a version
+            <br />
+            you can go back to.
+          </h1>
+          <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-ink-2">
+            Drop in a video and start cutting. Cutline reads the audio as it
+            imports, so the dead air is already found - trim it yourself, or
+            ask.
+          </p>
+        </div>
 
-        {/* The gate. Sharp corners and sprocket edges, unlike every control
-            around it — this is where the film goes. */}
+        {/* The gate. Sprocket edges and its own corner, unlike every control
+            around it — this is where the film goes. The file input is
+            invisible, so the focus ring has to be drawn by the gate itself or
+            a keyboard lands on nothing. */}
         <label
           onDragOver={(e) => {
             e.preventDefault();
@@ -69,9 +121,13 @@ function Start() {
             setOver(false);
             take(e.dataTransfer.files);
           }}
-          className={`mt-7 block cursor-pointer overflow-hidden rounded-panel border transition-colors duration-150 ${
-            over ? "border-leader bg-leader/[.07]" : "border-edge bg-panel hover:border-ink-3"
-          }`}
+          style={{ animationDelay: "90ms" }}
+          className={`settle mt-7 block cursor-pointer overflow-hidden rounded-panel border transition-colors duration-200
+                      focus-within:border-leader focus-within:ring-2 focus-within:ring-leader ${
+                        over
+                          ? "border-leader bg-leader/[.07]"
+                          : "border-edge bg-panel hover:border-ink-3 hover:bg-raised/40"
+                      }`}
         >
           <input
             type="file"
@@ -80,38 +136,79 @@ function Start() {
             onChange={(e) => take(e.target.files)}
             disabled={busy}
           />
-          <Perforations />
+          <Perforations state={gate} />
           <div className="px-6 py-8 text-center">
             <p className="text-[14px] font-medium text-ink">
-              {busy ? status ?? "Working" : "Drop a video, or click to choose"}
+              {busy
+                ? (status ?? "Working")
+                : over
+                  ? "Release to load it"
+                  : "Drop a video, or click to choose"}
             </p>
             <p className="mt-1.5 text-[12.5px] text-ink-3">
-              {busy ? "Running on your machine." : `MP4 or WebM, up to ${humanBytes(MAX_FILE_BYTES)}.`}
+              {busy
+                ? "Reading it on your machine."
+                : over
+                  ? "It never leaves this machine."
+                  : `MP4 or WebM, up to ${humanBytes(MAX_FILE_BYTES)}.`}
             </p>
           </div>
-          <Perforations />
+          <Perforations state={gate} />
         </label>
 
         {/* An import that fails leaves `busy` false, so the reason has to live
             outside the panel that only speaks while work is happening. */}
         {!busy && status && (
-          <p role="alert" className="mt-3 text-[12.5px] leading-relaxed text-grease">
+          <p
+            role="alert"
+            className="rise-in mt-3 text-[12.5px] leading-relaxed text-grease"
+          >
             {status}
           </p>
         )}
 
-        <dl className="mt-7 grid grid-cols-3 gap-5 border-t border-edge pt-5">
-          {[
-            ["Nothing uploads", "Footage stays on your machine."],
-            ["Ask for the edit", "Say what you want changed."],
-            ["Never lose a cut", "Restore any earlier version."],
-          ].map(([term, detail]) => (
-            <div key={term}>
-              <dt className="text-[12.5px] font-medium text-ink">{term}</dt>
-              <dd className="mt-1 text-[12px] leading-relaxed text-ink-3">{detail}</dd>
-            </div>
-          ))}
-        </dl>
+        <div className="settle" style={{ animationDelay: "170ms" }}>
+          <dl className="mt-7 grid grid-cols-3 gap-5 border-t border-edge pt-5">
+            {[
+              // The claims in the order the product makes them: it works by
+              // hand, it never loses a cut, and asking is an option on top.
+              ["No sign-up", "No account, and nothing uploads."],
+              ["Never lose a cut", "Restore any earlier version."],
+              ["AI if you want it", "Bring your own key."],
+            ].map(([term, detail]) => (
+              <div key={term}>
+                <dt className="text-[12.5px] font-medium text-ink">{term}</dt>
+                <dd className="mt-1 text-[12px] leading-relaxed text-ink-3">
+                  {detail}
+                </dd>
+              </div>
+            ))}
+          </dl>
+
+          {/* An editor that claims your footage never leaves the machine should
+              let you go and check.
+
+              It carries Button's mechanics — 32px tall, `rounded-ctl`, the
+              same press — without being one: this navigates, and a button that
+              navigates is the wrong element. One hover signal, not two: the
+              surface and border answer the pointer, so an underline on top
+              would be the same message said twice. Keyboard focus gets exactly
+              what hover gets. */}
+          <a
+            href={SOURCE_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            aria-label="Cutline on GitHub. Free and open source."
+            className="mt-5 inline-flex h-8 items-center gap-2 rounded-ctl border border-edge bg-panel px-3 text-[12.5px] text-ink-3
+                       transition-[background-color,border-color,color,transform] duration-150
+                       hover:border-ink-3 hover:bg-raised hover:text-ink
+                       focus-visible:border-ink-3 focus-visible:bg-raised focus-visible:text-ink
+                       active:scale-[.97]"
+          >
+            <GithubIcon size={14} className="shrink-0" />
+            Free and open source
+          </a>
+        </div>
       </div>
     </div>
   );
@@ -137,8 +234,14 @@ export default function Page() {
   const [rail, setRail] = useState({ ask: true, versions: true });
   useEffect(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem("cutline.rail") ?? "null") as Record<string, unknown> | null;
-      if (saved) setRail({ ask: saved.ask !== false, versions: saved.versions !== false });
+      const saved = JSON.parse(
+        localStorage.getItem("cutline.rail") ?? "null",
+      ) as Record<string, unknown> | null;
+      if (saved)
+        setRail({
+          ask: saved.ask !== false,
+          versions: saved.versions !== false,
+        });
     } catch {
       /* storage blocked; both stay open */
     }
@@ -187,7 +290,8 @@ export default function Page() {
   }, [playing, setPlaying, undo, redo]);
 
   // Before anything mounts, so no work is done for a screen that cannot use it.
-  if (windowWidth > 0 && windowWidth < MIN_WIDTH) return <DesktopOnly width={windowWidth} />;
+  if (windowWidth > 0 && windowWidth < MIN_WIDTH)
+    return <DesktopOnly width={windowWidth} />;
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-shell">
@@ -196,7 +300,9 @@ export default function Page() {
         {repo && media[0] && (
           <>
             <span className="h-3.5 w-px bg-edge" />
-            <span className="truncate text-[12.5px] text-ink-2">{media[0].name}</span>
+            <span className="truncate text-[12.5px] text-ink-2">
+              {media[0].name}
+            </span>
             <span className="tnum shrink-0 font-mono text-[11px] text-ink-3">
               {edl.width}×{edl.height} at {edl.fps} fps
             </span>
@@ -219,11 +325,18 @@ export default function Page() {
               onClick={redo}
             />
             <span className="mx-1 h-4 w-px bg-edge" />
-            <Button onClick={() => setConfirmingReset(true)} icon={<NewProjectIcon />}>
+            <Button
+              onClick={() => setConfirmingReset(true)}
+              icon={<NewProjectIcon />}
+            >
               New project
             </Button>
             {/* The one action that turns the edit into a file, so it takes the primary treatment. */}
-            <Button variant="primary" onClick={() => setExporting(true)} icon={<ExportIcon size={13} />}>
+            <Button
+              variant="primary"
+              onClick={() => setExporting(true)}
+              icon={<ExportIcon size={13} />}
+            >
               Export
             </Button>
           </div>
@@ -247,11 +360,16 @@ export default function Page() {
             <p>
               This permanently deletes the current project from this browser —{" "}
               <strong className="font-medium text-ink">
-                {atStake?.versions ?? 0} version{atStake?.versions === 1 ? "" : "s"}
+                {atStake?.versions ?? 0} version
+                {atStake?.versions === 1 ? "" : "s"}
               </strong>
-              {atStake && atStake.branches > 1 ? ` across ${atStake.branches} variants` : ""} and{" "}
+              {atStake && atStake.branches > 1
+                ? ` across ${atStake.branches} variants`
+                : ""}{" "}
+              and{" "}
               <strong className="font-medium text-ink">
-                {atStake?.files ?? 0} imported file{atStake?.files === 1 ? "" : "s"}
+                {atStake?.files ?? 0} imported file
+                {atStake?.files === 1 ? "" : "s"}
               </strong>
               .
             </p>
@@ -265,7 +383,9 @@ export default function Page() {
       {exporting && <ExportDialog open onClose={() => setExporting(false)} />}
 
       {!ready ? (
-        <div className="grid flex-1 place-items-center text-[12px] text-ink-3">Loading</div>
+        <div className="grid flex-1 place-items-center text-[12px] text-ink-3">
+          Loading
+        </div>
       ) : !repo ? (
         <Start />
       ) : (
@@ -279,7 +399,7 @@ export default function Page() {
                 <div className="mb-2 flex justify-center xl:absolute xl:-top-4 xl:left-2/5 xl:z-20 xl:mb-0 xl:block xl:-translate-x-1/2">
                   <Transport />
                 </div>
-                
+
                 <Timeline />
               </div>
             </div>
