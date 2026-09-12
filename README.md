@@ -16,7 +16,7 @@ Cut by hand - it is built to be quick and obvious. Every change is a version you
 
 - **It is a real editor, by hand.** Split, trim, reorder, change speed, fades, punch-ins, music, reframing and export all work with no key, no agent and no account. Nothing here is gated behind AI.
 - **Every change is a version.** Yours and the agent's alike. Restore any of them instantly, or branch into a variant to try a different cut without losing the first. Most editors ask you to be careful; this one lets you be wrong.
-- **No sign-up, because there is nothing to sign up to.** No account, no cloud project, no server in between. Your footage is written to browser-private storage on your own disk and never leaves it — which is also why it is fast.
+- **No sign-up, because there is nothing to sign up to.** No account, no cloud project, no server in between. Your footage is written to browser-private storage on your own disk and never leaves it — which is also why it is fast. The site counts anonymous page views, with no cookies and nothing personal; your footage, edits and keys are not part of it.
 - **AI when you want it, on your own key.** Optional, and off until you paste a key. "Cut all the silences", "fade out at the end", "make it vertical", "undo that" — for the passes that are tedious to do by hand.
 
 ## What you can do

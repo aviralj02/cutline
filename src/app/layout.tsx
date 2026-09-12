@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Archivo, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next";
 import { DESCRIPTION, SITE_NAME, SITE_URL, SOURCE_URL, TAGLINE } from "./site";
 
 /* Archivo: an industrial grotesque with signage heritage — equipment, not
@@ -86,7 +87,8 @@ const schema = {
   applicationCategory: "MultimediaApplication",
   applicationSubCategory: "Video Editor",
   operatingSystem: "Any — runs in a web browser",
-  browserRequirements: "Requires WebCodecs. Chrome, Edge, or Safari 26 and later.",
+  browserRequirements:
+    "Requires WebCodecs. Chrome, Edge, or Safari 26 and later.",
   isAccessibleForFree: true,
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
   license: "https://opensource.org/licenses/MIT",
@@ -117,6 +119,8 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }}
         />
         {children}
+
+        <Analytics />
       </body>
     </html>
   );

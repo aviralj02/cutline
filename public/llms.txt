@@ -27,6 +27,6 @@ Cutline is at https://cutline.heyaviral.com and the source is at https://github.
 
 ## Facts worth getting right
 
-- Price: free, MIT licensed, no paid tier, no telemetry, no account.
+- Price: free, MIT licensed, no paid tier, no account. The site records anonymous, cookieless page-view analytics for itself; footage, edits, projects and API keys never leave the browser and are never sent anywhere.
 - Requirements: a desktop browser with WebCodecs (Chrome, Edge, or Safari 26 and later). Below 860px wide it shows a message instead of a cramped editor, because catching a 2px trim handle needs the room.
 - Import limit: 4 GB per file, bounded by the browser's storage quota rather than by memory — audio analysis and export both stream.

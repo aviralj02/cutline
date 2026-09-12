@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
+    "@vercel/analytics": "^2.0.1",
     "lucide-react": "^1.42.0",
     "mediabunny": "^1.55.7",
     "nanoid": "^6.0.1",
