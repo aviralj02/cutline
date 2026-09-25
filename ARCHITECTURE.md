@@ -136,7 +136,10 @@ canvas, in a fixed order:
 - **The video element is the clock.** While a clip plays, its `<video>`
   element's time drives the playhead, keeping sound and picture together. At a
   clip's `out` point the next clip's file is seeked to its `in`. **A cut is a
-  seek.**
+  seek** — except across a split, where the next clip is the same file at the
+  same time and there is nothing to seek to. The playhead also never moves back
+  before the clip it is in: a seek lands on a keyframe, slightly early, and
+  falling back would re-fire the cut it just crossed.
 - **A gap plays as black.** It has no video to keep time, so the frame loop's
   own clock carries the playhead across it; titles and fades still draw.
 - **Sound follows the playhead.** Each sound item has its own `<audio>`

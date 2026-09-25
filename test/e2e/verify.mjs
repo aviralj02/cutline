@@ -20,7 +20,9 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 page.on("pageerror", (e) => log("  [page error]", e.message));
 page.on("console", (m) => m.type() === "error" && log("  [console]", m.text().slice(0, 200)));
 
-await page.goto("http://localhost:3000", { waitUntil: "networkidle" });
+// Another app may hold 3000; the suite should still be runnable.
+const BASE = process.env.BASE ?? "http://localhost:3000";
+await page.goto(BASE, { waitUntil: "networkidle" });
 log("\n1. App loads");
 check("dropzone visible", await page.getByText(/Drop a video/).isVisible());
 {
@@ -1957,6 +1959,43 @@ log("\n25g. A sound lane, and the original audio muted");
   await page.waitForTimeout(400);
   check("Backspace removes the selected sound and leaves its lane",
         (await page.locator("[data-sound]").count()) === 0 && (await page.getByText("Sound", { exact: true }).first().isVisible()));
+}
+
+// ---------------------------------------------------------------------------
+log("\n25h. Playback crosses a cut when a seek undershoots");
+{
+  // A real keyframe seek lands *before* the time asked for, and that undershoot
+  // dropped the playhead back into the previous clip, whose out-point fired
+  // again — playback froze on the cut until it was moved by hand. The synthetic
+  // clip seeks exactly, so only a simulated undershoot catches this.
+  await page.evaluate(() => {
+    const real = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "currentTime");
+    window.__realCurrentTime = real;
+    Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
+      get() { return real.get.call(this); },
+      set(t) { real.set.call(this, Math.max(0, t - 0.4)); },
+      configurable: true,
+    });
+  });
+
+  const headAt = () => page.evaluate(() => {
+    const m = /(\d+):(\d\d\.\d\d)\s*\/\s*\d+:\d\d\.\d\d/.exec(document.body.innerText);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  });
+  const clipBox = await page.locator("[data-clip]").first().boundingBox();
+  const rulerBox = await page.getByRole("slider", { name: "Playhead" }).boundingBox();
+  // Just short of the first cut, so playback has to cross it.
+  await page.mouse.click(clipBox.x + clipBox.width - 6, rulerBox.y + rulerBox.height / 2);
+  await page.waitForTimeout(300);
+  const from = await headAt();
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(3000);
+  const to = await headAt();
+  await page.getByRole("button", { name: "Pause", exact: true }).click().catch(() => {});
+  await page.evaluate(() =>
+    Object.defineProperty(HTMLMediaElement.prototype, "currentTime", window.__realCurrentTime));
+  check("playback carries on past a cut instead of freezing on it",
+        from !== null && to !== null && to - from > 1.2, `${from}s -> ${to}s in 3s`);
 }
 
 // ---------------------------------------------------------------------------

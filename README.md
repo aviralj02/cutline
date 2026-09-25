@@ -112,7 +112,7 @@ Two coordinate systems run through everything, and mixing them up is the main ha
 
 ```bash
 bun test                    # 240 unit tests: edit algebra, sound, snapping, silence DSP, agent tools, export planning, BYOK
-bun test/e2e/verify.mjs     # 246 checks in real Chrome — records its own test video, and exports one back out
+bun test/e2e/verify.mjs     # 247 checks in real Chrome — records its own test video, and exports one back out
 ```
 
 The end-to-end script records a 20-second clip with two deliberate silent stretches, imports it, and checks that analysis, editing, versioning, restore, playback, reload persistence and export all hold — then decodes the exported file back to prove it plays.

@@ -187,12 +187,15 @@ export default function Preview() {
               setPlayhead(spot.end, true);
             } else {
               const nv = isSlug(next.clip) ? undefined : pool.current.get(next.clip.src);
-              if (nv) nv.currentTime = next.clip.in;
+              // A split leaves the same file at the same time; seeking there only interrupts it.
+              const joined = nv === v && Math.abs(next.clip.in - spot.clip.out) < 0.001;
+              if (nv && !joined) nv.currentTime = next.clip.in;
               setPlayhead(next.start + 0.001, true);
             }
           } else {
             // The video element is the clock inside a clip, so audio and picture stay locked.
-            setPlayhead(spot.start + (v.currentTime - spot.clip.in) / rate, true);
+            // Never before the clip's start: a keyframe seek undershoots, and falling back re-fires the cut.
+            setPlayhead(Math.max(spot.start, spot.start + (v.currentTime - spot.clip.in) / rate), true);
           }
         } else {
           if (!v.paused) v.pause();

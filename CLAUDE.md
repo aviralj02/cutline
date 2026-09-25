@@ -238,6 +238,17 @@ the whole search surface is small — and therefore has to be exact.
   the edit's length. A slug plays as black, is never left at the end, and is
   closed by selecting it and deleting it. The ripple trim this replaced pulled
   every later clip along, so trimming a head read as the wrong edge moving.
+- **A cut is a seek, except when there is nothing to seek to.** At a clip's
+  out-point the next clip's file is seeked to its in-point — but a split leaves
+  the *same element* running at the *same source time*, so seeking there only
+  interrupts a decode that was already right. And a real seek lands on a
+  keyframe, **before** the time asked for: the clock line then computed a
+  playhead below the clip's own start, which fell back into the previous clip,
+  whose out-point fired again. Playback froze on the cut until the playhead was
+  dragged by hand. So skip the seek when the next clip continues the same
+  element (`joined`), and clamp the playhead to `spot.start`. Section 25h
+  simulates an undershooting seek, because the synthetic clip seeks exactly and
+  never reproduces this — the bug only ever showed on real footage.
 - **Drags catch on the edit's own landmarks.** Every cut, both ends of the
   edit, the playhead and the other lanes' item edges pull a drag in from
   `SNAP_PX` (7) away. The threshold is in **pixels, not seconds**, so the pull
@@ -543,7 +554,7 @@ missing. Errors say what went wrong and how to fix it.
 
 ```bash
 bun test                    # 240 unit tests: edit algebra, effects, sound, trim and gaps, snapping, undo, variants, DSP, agent tools, export planning, BYOK
-bun test/e2e/verify.mjs     # 246 checks in real Chrome — records its own test clip, and exports one back out
+bun test/e2e/verify.mjs     # 247 checks in real Chrome — records its own test clip, and exports one back out
 bun test/e2e/shots.mjs      # screenshots both screens for design review
 ```
 
