@@ -1999,6 +1999,57 @@ log("\n25h. Playback crosses a cut when a seek undershoots");
 }
 
 // ---------------------------------------------------------------------------
+log("\n25i. Seeking five seconds keeps playing, and the end plays again from the start");
+{
+  const read = () => page.evaluate(() => {
+    const m = /(\d+):(\d\d\.\d\d)\s*\/\s*(\d+):(\d\d\.\d\d)/.exec(document.body.innerText);
+    return m ? { at: +m[1] * 60 + +m[2], total: +m[3] * 60 + +m[4] } : null;
+  });
+  const isPlaying = () => page.getByRole("button", { name: "Pause", exact: true }).isVisible();
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press("Home");
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(400);
+  const before = await read();
+  await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(150);
+  const jumped = await read();
+  check("ArrowRight seeks five seconds while playing",
+        before && jumped && jumped.at - before.at > 4.5 && jumped.at - before.at < 5.6,
+        `${before?.at}s -> ${jumped?.at}s`);
+  check("and playback carries on from there", await isPlaying());
+  await page.waitForTimeout(500);
+  const later = await read();
+  check("the picture's clock follows the seek rather than pulling it back",
+        later && jumped && later.at >= jumped.at, `${jumped?.at}s -> ${later?.at}s`);
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForTimeout(150);
+  const back = await read();
+  check("ArrowLeft seeks five seconds back", later && back && later.at - back.at > 4, `${later?.at}s -> ${back?.at}s`);
+
+  // Play through to the end, then Play starts over.
+  const total = back.total;
+  await page.getByRole("button", { name: "Pause", exact: true }).click().catch(() => {});
+  const clips = page.locator("[data-clip]");
+  const lastClip = await clips.nth((await clips.count()) - 1).boundingBox();
+  const rulerBox = await page.getByRole("slider", { name: "Playhead" }).boundingBox();
+  await page.mouse.click(lastClip.x + lastClip.width - 8, rulerBox.y + rulerBox.height / 2);
+  await page.waitForTimeout(200);
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(2500);
+  const ended = await read();
+  check("playback stops at the end", !(await isPlaying()) && ended && Math.abs(ended.at - total) < 0.05,
+        `${ended?.at}s of ${total}s`);
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await page.waitForTimeout(1200);
+  const restarted = await read();
+  // A second in, it must still be playing the opening, not stopped or thrown to a later cut.
+  check("Play at the end starts again from the beginning", restarted && restarted.at > 0.6 && restarted.at < 1.8 && (await isPlaying()),
+        `${restarted?.at}s after 1.2s, playing ${await isPlaying()}`);
+  await page.getByRole("button", { name: "Pause", exact: true }).click().catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 log("\n26. Export writes a real file, in this browser");
 {
   await page.getByRole("button", { name: "Export", exact: true }).click();

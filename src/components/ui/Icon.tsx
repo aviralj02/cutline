@@ -36,8 +36,8 @@ import {
   Plus,
   Redo2,
   Scissors,
-  StepBack,
-  StepForward,
+  Rewind,
+  FastForward,
   Trash2,
   Type,
   Undo2,
@@ -78,8 +78,8 @@ export const SpeedIcon = (p: IconProps) => <Gauge {...line} {...p} />;
 
 export const StartIcon = (p: IconProps) => <ChevronFirst {...line} {...p} />;
 export const EndIcon = (p: IconProps) => <ChevronLast {...line} {...p} />;
-export const PrevFrameIcon = (p: IconProps) => <StepBack {...line} {...p} />;
-export const NextFrameIcon = (p: IconProps) => <StepForward {...line} {...p} />;
+export const SeekBackIcon = (p: IconProps) => <Rewind {...line} {...p} />;
+export const SeekForwardIcon = (p: IconProps) => <FastForward {...line} {...p} />;
 export const AddIcon = (p: IconProps) => <Plus {...line} {...p} />;
 export const CloseIcon = (p: IconProps) => <X {...line} {...p} />;
 export const FadeTrackIcon = (p: IconProps) => <Blend {...line} {...p} />;

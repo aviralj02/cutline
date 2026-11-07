@@ -1,12 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useStore, edlOf } from "@/lib/store";
 import { duration, fmt } from "@/lib/edl/query";
 import {
-  EndIcon, IconButton, NextFrameIcon, PauseIcon, PlayIcon, PrevFrameIcon,
+  EndIcon, IconButton, PauseIcon, PlayIcon, SeekBackIcon, SeekForwardIcon,
   StartIcon, Timecode,
 } from "@/components/ui";
+
+const SEEK = 5;
+
+// Moves the playhead by seconds; playback carries on from the new spot.
+function seekBy(secs: number) {
+  const { repo, playhead, playing, setPlayhead } = useStore.getState();
+  const total = duration(edlOf(repo));
+  setPlayhead(Math.max(0, Math.min(total, playhead + secs)), playing);
+}
 
 export default function Transport() {
   const repo = useStore((s) => s.repo);
@@ -17,32 +26,31 @@ export default function Transport() {
 
   const edl = useMemo(() => edlOf(repo), [repo]);
   const total = duration(edl);
-  const frame = 1 / edl.fps;
-
-  const step = useCallback(
-    (frames: number) => {
-      setPlaying(false);
-      setPlayhead(Math.max(0, Math.min(total, playhead + frames * frame)));
-    },
-    [frame, playhead, setPlayhead, setPlaying, total],
-  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (el && ["INPUT", "TEXTAREA"].includes(el.tagName)) return;
-      // Alt+Arrow reorders the selected clip on the timeline; the playhead
-      // must stay put, or one keystroke does two unrelated things.
+      // Alt+Arrow reorders the selected clip on the timeline; the playhead must stay put.
       if (e.altKey) return;
-      // Shift jumps a second, the way a jog wheel coarsens.
-      if (e.key === "ArrowLeft") { e.preventDefault(); step(e.shiftKey ? -edl.fps : -1); }
-      if (e.key === "ArrowRight") { e.preventDefault(); step(e.shiftKey ? edl.fps : 1); }
-      if (e.key === "Home") { e.preventDefault(); setPlaying(false); setPlayhead(0); }
-      if (e.key === "End") { e.preventDefault(); setPlaying(false); setPlayhead(total); }
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
+      e.preventDefault();
+      const s = useStore.getState();
+      const d = duration(edlOf(s.repo));
+      const dir = e.key === "ArrowLeft" ? -1 : 1;
+      // Plain arrows seek five seconds; Shift steps one frame for exact placement.
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        if (e.shiftKey) {
+          s.setPlaying(false);
+          s.setPlayhead(Math.max(0, Math.min(d, s.playhead + dir / edlOf(s.repo).fps)));
+        } else seekBy(dir * SEEK);
+      }
+      if (e.key === "Home") { s.setPlaying(false); s.setPlayhead(0); }
+      if (e.key === "End") { s.setPlaying(false); s.setPlayhead(d); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [edl.fps, setPlayhead, setPlaying, step, total]);
+  }, []);
 
   const atStart = playhead <= 0.001;
   const atEnd = total > 0 && playhead >= total - 0.001;
@@ -58,10 +66,10 @@ export default function Transport() {
         className="!h-7 !w-7"
       />
       <IconButton
-        label="Back one frame"
-        icon={<PrevFrameIcon size={14} />}
+        label="Back 5 seconds"
+        icon={<SeekBackIcon size={14} />}
         disabled={atStart}
-        onClick={() => step(-1)}
+        onClick={() => seekBy(-SEEK)}
         round
         className="!h-7 !w-7"
       />
@@ -74,10 +82,10 @@ export default function Transport() {
         className="mx-0.5"
       />
       <IconButton
-        label="Forward one frame"
-        icon={<NextFrameIcon size={14} />}
+        label="Forward 5 seconds"
+        icon={<SeekForwardIcon size={14} />}
         disabled={atEnd}
-        onClick={() => step(1)}
+        onClick={() => seekBy(SEEK)}
         round
         className="!h-7 !w-7"
       />
