@@ -120,6 +120,8 @@ export default function Preview() {
   useEffect(() => {
     let raf = 0;
     let last: number | null = null;
+    // The playhead this loop last wrote; anything else moved it.
+    const ours: { current: number | null } = { current: null };
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame);
       const canvas = canvasRef.current;
@@ -134,6 +136,7 @@ export default function Preview() {
       const gap = !!spot && isSlug(spot.clip);
       const tick = last === null ? 0 : (now - last) / 1000;
       last = now;
+      if (!playRef.current) ours.current = null;
 
       for (const [id, v] of pool.current) {
         v.muted = !!cur.videoMuted;
@@ -160,6 +163,7 @@ export default function Preview() {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.fillStyle = "#0a0a0a";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ours.current = null;
         if (playRef.current) setPlaying(false);
         return;
       }
@@ -170,7 +174,10 @@ export default function Preview() {
         const after = spots[spot.index + 1];
         const nv = after && !isSlug(after.clip) ? pool.current.get(after.clip.src) : undefined;
         if (nv && Math.abs(nv.currentTime - after.clip.in) > 0.05) nv.currentTime = after.clip.in;
-        if (playRef.current) setPlayhead(Math.min(spot.end, t + tick), true);
+        if (playRef.current) {
+          ours.current = Math.min(spot.end, t + tick);
+          setPlayhead(ours.current, true);
+        }
       } else {
         if (!v || !v.videoWidth) return;
         const rate = spot.clip.speed ?? 1;
@@ -178,11 +185,15 @@ export default function Preview() {
 
         if (playRef.current) {
           v.playbackRate = rate;
-          if (v.paused) void v.play().catch(() => setPlaying(false));
+          // Starting play or a seek from outside re-seeks the element; it may still sit at the end.
+          const jumped = ours.current === null || Math.abs(t - ours.current) > 0.05;
+          if (jumped && Math.abs(v.currentTime - wanted) > 0.05) v.currentTime = wanted;
           // A cut is a seek: at the out-point, jump rather than play through.
-          if (v.currentTime >= spot.clip.out - 0.03) {
+          if (!jumped && (v.ended || v.currentTime >= spot.clip.out - 0.03)) {
             const next = spots[spot.index + 1];
             if (!next) {
+              if (!v.paused) v.pause();
+              ours.current = null;
               setPlaying(false);
               setPlayhead(spot.end, true);
             } else {
@@ -190,14 +201,19 @@ export default function Preview() {
               // A split leaves the same file at the same time; seeking there only interrupts it.
               const joined = nv === v && Math.abs(next.clip.in - spot.clip.out) < 0.001;
               if (nv && !joined) nv.currentTime = next.clip.in;
-              setPlayhead(next.start + 0.001, true);
+              ours.current = next.start + 0.001;
+              setPlayhead(ours.current, true);
             }
           } else {
+            if (v.paused) void v.play().catch(() => setPlaying(false));
             // The video element is the clock inside a clip, so audio and picture stay locked.
             // Never before the clip's start: a keyframe seek undershoots, and falling back re-fires the cut.
-            setPlayhead(Math.max(spot.start, spot.start + (v.currentTime - spot.clip.in) / rate), true);
+            const at = jumped ? t : Math.max(spot.start, spot.start + (v.currentTime - spot.clip.in) / rate);
+            ours.current = at;
+            setPlayhead(at, true);
           }
         } else {
+          ours.current = null;
           if (!v.paused) v.pause();
           if (Math.abs(v.currentTime - wanted) > 0.05) v.currentTime = wanted;
         }

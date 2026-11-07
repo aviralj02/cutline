@@ -510,8 +510,10 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setPlaying(p) {
-    const d = duration(edlOf(get().repo));
-    if (p && get().playhead >= d - 0.01) set({ playhead: 0 });
+    const edl = edlOf(get().repo);
+    const d = duration(edl);
+    // Play from the end starts over, within a frame so float drift cannot strand it.
+    if (p && get().playhead >= d - 1 / edl.fps) set({ playhead: 0 });
     set({ playing: p });
   },
 
